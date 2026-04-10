@@ -1,0 +1,15 @@
+.helpers/
+meshes-op2/
+outputs-op2/
+*.d
+*.o
+*.swp
+*.swo
+core
+nssolver_op2_seq
+*_solution.vtk
+*_residual.csv
+*_wall.csv
+*_wall_cp.csv
+*_profile_*.csv
+meshes/*.xml

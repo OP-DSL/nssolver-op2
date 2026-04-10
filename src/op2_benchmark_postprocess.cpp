@@ -1,0 +1,179 @@
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "nssolver/mesh.hpp"
+#include "nssolver/physics.hpp"
+#include "nssolver/solver.hpp"
+#include "nssolver/state.hpp"
+#include "nssolver/validation.hpp"
+
+#ifdef NSSOLVER_HAVE_HDF5
+#include <H5Cpp.h>
+#endif
+
+namespace nssolver {
+
+namespace {
+
+#ifdef NSSOLVER_HAVE_HDF5
+std::vector<hsize_t> read_dims(const H5::DataSet& dataset) {
+    H5::DataSpace space = dataset.getSpace();
+    const int rank = space.getSimpleExtentNdims();
+    std::vector<hsize_t> dims(static_cast<std::size_t>(rank));
+    space.getSimpleExtentDims(dims.data());
+    return dims;
+}
+
+template <typename T>
+std::vector<T> read_dataset(const H5::H5File& file, const std::string& name, const H5::PredType& type) {
+    H5::DataSet dataset = file.openDataSet(name);
+    const auto dims = read_dims(dataset);
+    std::size_t count = 1;
+    for (hsize_t dim : dims) {
+        count *= static_cast<std::size_t>(dim);
+    }
+    std::vector<T> values(count);
+    dataset.read(values.data(), type);
+    return values;
+}
+
+Mesh read_op2_mesh_hdf5(const std::string& path) {
+    H5::H5File file(path, H5F_ACC_RDONLY);
+    const auto coords = read_dataset<Real>(file, "node_coordinates", H5::PredType::NATIVE_DOUBLE);
+    const auto node_volume = read_dataset<Real>(file, "node_volume", H5::PredType::NATIVE_DOUBLE);
+    const auto wall_distance = read_dataset<Real>(file, "node_wall_distance", H5::PredType::NATIVE_DOUBLE);
+    const auto edge_nodes = read_dataset<Index>(file, "edge-->node", H5::PredType::NATIVE_INT32);
+    const auto edge_weights = read_dataset<Real>(file, "edge_weights", H5::PredType::NATIVE_DOUBLE);
+    const auto bface_nodes = read_dataset<Index>(file, "bface-->node", H5::PredType::NATIVE_INT32);
+    const auto bface_normals = read_dataset<Real>(file, "bface_normal", H5::PredType::NATIVE_DOUBLE);
+    const auto bface_area = read_dataset<Real>(file, "bface_area", H5::PredType::NATIVE_DOUBLE);
+    const auto bface_group = read_dataset<Index>(file, "bface_group", H5::PredType::NATIVE_INT32);
+    const auto bface_type = read_dataset<int>(file, "bface_type", H5::PredType::NATIVE_INT32);
+
+    Mesh mesh;
+    mesh.nodes.count = coords.size() / 3;
+    mesh.nodes.x.resize(mesh.nodes.count);
+    mesh.nodes.y.resize(mesh.nodes.count);
+    mesh.nodes.z.resize(mesh.nodes.count);
+    mesh.nodes.vol = node_volume;
+    mesh.nodes.wall_dist = wall_distance;
+    mesh.node_to_edges.assign(mesh.nodes.count, {});
+    mesh.node_to_boundary_faces.assign(mesh.nodes.count, {});
+    for (std::size_t i = 0; i < mesh.nodes.count; ++i) {
+        mesh.nodes.x[i] = coords[3 * i + 0];
+        mesh.nodes.y[i] = coords[3 * i + 1];
+        mesh.nodes.z[i] = coords[3 * i + 2];
+    }
+
+    mesh.edges.count = edge_nodes.size() / 2;
+    mesh.edges.node_L.resize(mesh.edges.count);
+    mesh.edges.node_R.resize(mesh.edges.count);
+    mesh.edges.nx.resize(mesh.edges.count);
+    mesh.edges.ny.resize(mesh.edges.count);
+    mesh.edges.nz.resize(mesh.edges.count);
+    mesh.edges.area.resize(mesh.edges.count);
+    for (std::size_t e = 0; e < mesh.edges.count; ++e) {
+        mesh.edges.node_L[e] = edge_nodes[2 * e + 0];
+        mesh.edges.node_R[e] = edge_nodes[2 * e + 1];
+        mesh.edges.nx[e] = edge_weights[3 * e + 0];
+        mesh.edges.ny[e] = edge_weights[3 * e + 1];
+        mesh.edges.nz[e] = edge_weights[3 * e + 2];
+        mesh.edges.area[e] = norm(Vec3 {mesh.edges.nx[e], mesh.edges.ny[e], mesh.edges.nz[e]});
+        mesh.node_to_edges[mesh.edges.node_L[e]].push_back(static_cast<Index>(e));
+        mesh.node_to_edges[mesh.edges.node_R[e]].push_back(static_cast<Index>(e));
+    }
+
+    mesh.boundary_faces.count = bface_nodes.size() / 4;
+    mesh.boundary_faces.n1.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.n2.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.n3.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.n4.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.nx.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.ny.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.nz.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.area = bface_area;
+    mesh.boundary_faces.group_id = bface_group;
+    mesh.boundary_faces.type.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.name.resize(mesh.boundary_faces.count);
+    for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
+        mesh.boundary_faces.n1[f] = bface_nodes[4 * f + 0];
+        mesh.boundary_faces.n2[f] = bface_nodes[4 * f + 1];
+        mesh.boundary_faces.n3[f] = bface_nodes[4 * f + 2];
+        mesh.boundary_faces.n4[f] = bface_nodes[4 * f + 3];
+        mesh.boundary_faces.nx[f] = bface_normals[3 * f + 0];
+        mesh.boundary_faces.ny[f] = bface_normals[3 * f + 1];
+        mesh.boundary_faces.nz[f] = bface_normals[3 * f + 2];
+        mesh.boundary_faces.type[f] = static_cast<BoundaryType>(bface_type[f]);
+        mesh.boundary_faces.name[f] = "group_" + std::to_string(mesh.boundary_faces.group_id[f]);
+        mesh.node_to_boundary_faces[mesh.boundary_faces.n1[f]].push_back(static_cast<Index>(f));
+        mesh.node_to_boundary_faces[mesh.boundary_faces.n2[f]].push_back(static_cast<Index>(f));
+        mesh.node_to_boundary_faces[mesh.boundary_faces.n3[f]].push_back(static_cast<Index>(f));
+        mesh.node_to_boundary_faces[mesh.boundary_faces.n4[f]].push_back(static_cast<Index>(f));
+    }
+    return mesh;
+}
+
+FlowState read_solution_hdf5(const std::string& path, const GasModel& gas, std::size_t node_count) {
+    H5::H5File file(path, H5F_ACC_RDONLY);
+    const auto q = read_dataset<Real>(file, "q", H5::PredType::NATIVE_DOUBLE);
+    if (q.size() != 6 * node_count) {
+        throw std::runtime_error("solution dataset 'q' has unexpected shape");
+    }
+
+    FlowState state;
+    state.resize(node_count);
+    for (std::size_t i = 0; i < node_count; ++i) {
+        state.rho[i] = q[6 * i + 0];
+        state.rhou[i] = q[6 * i + 1];
+        state.rhov[i] = q[6 * i + 2];
+        state.rhow[i] = q[6 * i + 3];
+        state.rhoE[i] = q[6 * i + 4];
+        state.rhoNu[i] = q[6 * i + 5];
+    }
+    update_primitives(state, gas);
+    return state;
+}
+#endif
+
+}  // namespace
+
+}  // namespace nssolver
+
+int main(int argc, char** argv) {
+    using namespace nssolver;
+
+#ifndef NSSOLVER_HAVE_HDF5
+    (void)argc;
+    (void)argv;
+    throw std::runtime_error("nssolver_op2_benchmark_postprocess requires HDF5-enabled build");
+#else
+    if (argc != 6) {
+        std::cerr << "usage: nssolver_op2_benchmark_postprocess <case> <mesh.h5> <solution.h5> <output_prefix> <leading_edge_x>\n";
+        return 1;
+    }
+
+    const std::string case_name = argv[1];
+    if (case_name != "flatplate_develop" && case_name != "flatplate") {
+        throw std::runtime_error("only flatplate/flatplate_develop postprocessing is implemented");
+    }
+
+    GasModel gas {};
+    SolverOptions options {};
+    options.freestream.primitive = Primitive {.rho = 1.225, .u = 20.0, .v = 0.0, .w = 0.0, .p = 101325.0, .nu_tilde = 0.0};
+    const Mesh mesh = read_op2_mesh_hdf5(argv[2]);
+    const FlowState state = read_solution_hdf5(argv[3], gas, mesh.nodes.count);
+    const std::filesystem::path prefix_path(argv[4]);
+    if (prefix_path.has_parent_path()) {
+        std::filesystem::create_directories(prefix_path.parent_path());
+    }
+    const Real leading_edge_x = std::stod(argv[5]);
+    write_flat_plate_benchmark_outputs_from_wall_type(argv[4], mesh, state, gas, options, leading_edge_x,
+                                                      BoundaryType::NoSlipWall);
+    std::cout << "Wrote benchmark outputs with prefix: " << argv[4] << "\n";
+    return 0;
+#endif
+}
