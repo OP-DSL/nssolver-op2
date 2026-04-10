@@ -1,4 +1,7 @@
+.codex
+.codex/
 .helpers/
+generated/
 meshes-op2/
 outputs-op2/
 *.d
@@ -7,6 +10,9 @@ outputs-op2/
 *.swo
 core
 nssolver_op2_seq
+nssolver_op2_genseq
+nssolver_op2_openmp
+nssolver_op2_cuda
 *_solution.vtk
 *_residual.csv
 *_wall.csv

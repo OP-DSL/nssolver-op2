@@ -106,6 +106,16 @@ make seq
 ./nssolver_op2_seq --config configs/hydra_benchmark.cfg
 ```
 
+For alternate backends, build `make openmp` or `make cuda` and run the matching
+binary. The validation scripts also support backend selection through
+`OP2_TARGET`, for example:
+
+```bash
+OP2_TARGET=openmp bash tests/test_smoke.sh
+OP2_TARGET=cuda bash tests/test_consistency.sh
+OP2_TARGET=seq bash scripts/run_flatplate_validation.sh
+```
+
 ### Convert solution to VTK
 
 ```bash

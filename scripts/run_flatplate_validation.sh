@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$APP_DIR"
+source "$APP_DIR/scripts/op2_backend.sh"
 
 cd "$ROOT_DIR"
 
@@ -11,10 +12,12 @@ cd "$ROOT_DIR"
 
 "$APP_DIR/scripts/preprocess_mesh.sh" flatplate meshes-op2/flatplate.h5
 
+op2_ensure_backend_built "$APP_DIR"
+OP2_BINARY="./$(op2_binary_name)"
+
 (
   cd "$APP_DIR"
-  make seq
-  ./nssolver_op2_seq --config configs/flatplate_develop.cfg
+  "$OP2_BINARY" --config configs/flatplate_develop.cfg
 )
 
 "$APP_DIR/scripts/postprocess_flatplate.sh" \

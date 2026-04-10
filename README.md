@@ -55,6 +55,8 @@ make config
 make seq
 ```
 
+Use `make openmp` or `make cuda` to build those backends instead.
+
 4. Build the helper tools and preprocess a mesh:
 
 ```bash
@@ -68,6 +70,16 @@ make seq
 ./nssolver_op2_seq --config configs/box.cfg
 ./nssolver_op2_seq --config configs/hydra_benchmark.cfg
 ```
+
+The runner scripts and tests can target any built backend through `OP2_TARGET`:
+
+```bash
+OP2_TARGET=seq bash tests/test_smoke.sh
+OP2_TARGET=openmp bash tests/test_smoke.sh
+OP2_TARGET=cuda bash tests/test_smoke.sh
+```
+
+Supported values are `seq`, `genseq`, `openmp`, and `cuda`. The default is `seq`.
 
 6. Convert HDF5 solution output to VTK:
 

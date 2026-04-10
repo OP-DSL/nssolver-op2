@@ -32,8 +32,8 @@ struct ResidualNorms {
   double linf_rho = 0.0;
 };
 
-static void usage() {
-  std::cerr << "usage: ./nssolver_op2_seq --config <config.cfg>\n";
+static void usage(const char *argv0) {
+  std::cerr << "usage: " << argv0 << " --config <config.cfg>\n";
 }
 
 static void write_residual_history_csv_op2(const std::string &path, const std::vector<double> &l2_rho,
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
       }
     }
     if (config_path.empty()) {
-      usage();
+      usage(argv[0]);
       return 1;
     }
 
