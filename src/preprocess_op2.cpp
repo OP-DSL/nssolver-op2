@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <array>
+#include <map>
 #include <vector>
 
 #include "nssolver/hydra_reader.hpp"
@@ -15,6 +16,8 @@
 namespace nssolver {
 
 namespace {
+
+using ParameterMap = std::map<std::string, std::string>;
 
 #ifdef NSSOLVER_HAVE_HDF5
 template <typename T>
@@ -158,7 +161,30 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
 }
 #endif
 
-Mesh build_mesh(const std::string& case_name, const std::string& input_path) {
+int parse_int_param(const ParameterMap& params, const std::string& key, int default_value) {
+    const auto it = params.find(key);
+    return it == params.end() ? default_value : std::stoi(it->second);
+}
+
+Real parse_real_param(const ParameterMap& params, const std::string& key, Real default_value) {
+    const auto it = params.find(key);
+    return it == params.end() ? default_value : std::stod(it->second);
+}
+
+ParameterMap parse_parameters(int argc, char** argv, int first_index) {
+    ParameterMap params;
+    for (int i = first_index; i < argc; ++i) {
+        const std::string arg = argv[i];
+        const std::size_t eq = arg.find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= arg.size()) {
+            throw std::runtime_error("expected parameter in key=value form, got: " + arg);
+        }
+        params[arg.substr(0, eq)] = arg.substr(eq + 1);
+    }
+    return params;
+}
+
+Mesh build_mesh(const std::string& case_name, const std::string& input_path, const ParameterMap& params) {
     if (case_name == "box") {
         return make_structured_box_mesh(StructuredBoxSpec {
             .nx = 21, .ny = 11, .nz = 2, .lx = 2.0, .ly = 1.0, .lz = 0.05, .xmin = BoundaryType::Farfield,
@@ -177,6 +203,65 @@ Mesh build_mesh(const std::string& case_name, const std::string& input_path) {
             .wall_normal_growth = 2000.0, .inlet = BoundaryType::Inlet, .outlet = BoundaryType::Outlet,
             .plate_type = BoundaryType::NoSlipWall, .lower_upstream_type = BoundaryType::SlipWall,
             .upper_type = BoundaryType::Farfield});
+    }
+    if (case_name == "bump3d") {
+        return make_bump_3d_mesh(Bump3DSpec {
+            .nx = parse_int_param(params, "nx", 61),
+            .ny = parse_int_param(params, "ny", 29),
+            .nz = parse_int_param(params, "nz", 31),
+            .lx = parse_real_param(params, "lx", 2.4),
+            .ly = parse_real_param(params, "ly", 0.55),
+            .lz = parse_real_param(params, "lz", 0.8),
+            .bump_center_x = parse_real_param(params, "bump_center_x", 1.1),
+            .bump_half_width_x = parse_real_param(params, "bump_half_width_x", 0.35),
+            .bump_center_z = parse_real_param(params, "bump_center_z", 0.4),
+            .bump_half_width_z = parse_real_param(params, "bump_half_width_z", 0.16),
+            .bump_height = parse_real_param(params, "bump_height", 0.14),
+            .inlet = BoundaryType::Farfield, .outlet = BoundaryType::Farfield,
+            .lower_wall = BoundaryType::SlipWall, .upper_wall = BoundaryType::SlipWall,
+            .side_wall = BoundaryType::SlipWall});
+    }
+    if (case_name == "axisymmetric_body") {
+        return make_axisymmetric_body_mesh(AxisymmetricBodySpec {
+            .nx = parse_int_param(params, "nx", 101),
+            .nr = parse_int_param(params, "nr", 29),
+            .ntheta = parse_int_param(params, "ntheta", 15),
+            .lx = parse_real_param(params, "lx", 2.6),
+            .body_start_x = parse_real_param(params, "body_start_x", 0.35),
+            .body_length = parse_real_param(params, "body_length", 1.7),
+            .body_radius_max = parse_real_param(params, "body_radius_max", 0.24),
+            .body_tail_radius = parse_real_param(params, "body_tail_radius", 0.02),
+            .farfield_radius = parse_real_param(params, "farfield_radius", 0.5),
+            .wedge_angle_degrees = parse_real_param(params, "wedge_angle_degrees", 18.0),
+            .radial_growth = parse_real_param(params, "radial_growth", 3.5),
+            .inlet = BoundaryType::Farfield, .outlet = BoundaryType::Farfield,
+            .body_wall = BoundaryType::SlipWall, .farfield = BoundaryType::Farfield,
+            .wedge_wall = BoundaryType::SlipWall});
+    }
+    if (case_name == "naca_wing") {
+        return make_naca_finite_wing_mesh(NacaWingSpec {
+            .nx = parse_int_param(params, "nx", 121),
+            .ny = parse_int_param(params, "ny", 41),
+            .nz = parse_int_param(params, "nz", 81),
+            .lx = parse_real_param(params, "lx", 2.8),
+            .ly = parse_real_param(params, "ly", 0.9),
+            .lz = parse_real_param(params, "lz", 1.6),
+            .wing_origin_x = parse_real_param(params, "wing_origin_x", 0.45),
+            .wing_center_z = parse_real_param(params, "wing_center_z", 0.8),
+            .span = parse_real_param(params, "span", 1.0),
+            .root_chord = parse_real_param(params, "root_chord", 0.8),
+            .tip_chord = parse_real_param(params, "tip_chord", 0.4),
+            .sweep_degrees = parse_real_param(params, "sweep_degrees", 20.0),
+            .thickness_ratio = parse_real_param(params, "thickness_ratio", 0.12),
+            .camber_ratio = parse_real_param(params, "camber_ratio", 0.0),
+            .camber_position = parse_real_param(params, "camber_position", 0.4),
+            .vertical_offset = parse_real_param(params, "vertical_offset", 0.0),
+            .wall_normal_growth = parse_real_param(params, "wall_normal_growth", 4.0),
+            .inlet = BoundaryType::Farfield, .outlet = BoundaryType::Farfield,
+            .wing_wall = BoundaryType::NoSlipWall,
+            .lower_farfield = BoundaryType::SlipWall,
+            .upper_farfield = BoundaryType::Farfield,
+            .side_farfield = BoundaryType::Farfield});
     }
     if (case_name == "hydra" || case_name == "hydra_benchmark") {
         if (input_path.empty()) {
@@ -199,16 +284,22 @@ int main(int argc, char** argv) {
     (void)argv;
     throw std::runtime_error("nssolver_preprocess_op2 requires HDF5-enabled build");
 #else
-    if (argc < 3 || argc > 4) {
-        std::cerr << "usage: nssolver_preprocess_op2 <case> <output_mesh.h5> [input_mesh.hdf]\n";
+    if (argc < 3) {
+        std::cerr << "usage: nssolver_preprocess_op2 <case> <output_mesh.h5> [input_mesh.hdf] [key=value ...]\n";
         return 1;
     }
 
     const std::string case_name = argv[1];
     const std::string output_path = argv[2];
-    const std::string input_path = argc >= 4 ? argv[3] : std::string {};
+    int param_index = 3;
+    std::string input_path;
+    if ((case_name == "hydra" || case_name == "hydra_benchmark") && argc >= 4) {
+        input_path = argv[3];
+        param_index = 4;
+    }
+    const ParameterMap params = parse_parameters(argc, argv, param_index);
 
-    const Mesh mesh = build_mesh(case_name, input_path);
+    const Mesh mesh = build_mesh(case_name, input_path, params);
     const MeshValidationReport report = validate_mesh(mesh);
     if (!report.ok) {
         throw std::runtime_error("preprocessed mesh failed validation");

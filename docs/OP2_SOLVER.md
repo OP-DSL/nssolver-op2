@@ -468,6 +468,40 @@ The OP2 executable does not read the original internal mesh objects or raw Hydra
 
 All connectivity is zero-based in the preprocessed OP2 mesh.
 
+The local preprocessing helper also supports procedural structured meshes with
+runtime parameter overrides. `bump3d` and `axisymmetric_body` now default to
+the stronger geometry presets that produced the clearest visible flow features
+in the initial exploratory runs.
+
+```bash
+bash scripts/preprocess_mesh.sh bump3d meshes-op2/bump3d.h5
+bash scripts/preprocess_mesh.sh axisymmetric_body meshes-op2/axisymmetric_body.h5
+bash scripts/preprocess_mesh.sh naca_wing meshes-op2/naca_wing.h5
+```
+
+Implemented procedural 3D generators:
+
+- `bump3d`: lower-wall hill defined by an analytic bump law in `x` and `z`
+  with default preset `61x29x31`, `lx=2.4`, `ly=0.55`, `lz=0.8`,
+  `bump_center_x=1.1`, `bump_half_width_x=0.35`, `bump_center_z=0.4`,
+  `bump_half_width_z=0.16`, `bump_height=0.14`
+- `axisymmetric_body`: analytic body-of-revolution embedded in a wedge-sector
+  farfield with default preset `101x29x15`, `lx=2.6`, `body_start_x=0.35`,
+  `body_length=1.7`, `body_radius_max=0.24`, `body_tail_radius=0.02`,
+  `farfield_radius=0.5`, `wedge_angle_degrees=18`, `radial_growth=3.5`
+- `naca_wing`: finite swept tapered wing from a NACA 4-digit section law
+  embedded in a structured farfield block with default preset `121x41x81`,
+  `lx=2.8`, `ly=0.9`, `lz=1.6`, `wing_origin_x=0.45`, `wing_center_z=0.8`,
+  `span=1.0`, `root_chord=0.8`, `tip_chord=0.4`, `sweep_degrees=20`,
+  `thickness_ratio=0.12`, `camber_ratio=0.0`, `camber_position=0.4`,
+  `vertical_offset=0.0`, `wall_normal_growth=4.0`
+
+Documented config files for the default procedural cases:
+
+- [configs/bump3d.cfg](/home/ireguly/nssolver-op2/configs/bump3d.cfg)
+- [configs/axisymmetric_body.cfg](/home/ireguly/nssolver-op2/configs/axisymmetric_body.cfg)
+- [configs/naca_wing.cfg](/home/ireguly/nssolver-op2/configs/naca_wing.cfg)
+
 ## 15. Output Contract
 
 The OP2 executable writes:

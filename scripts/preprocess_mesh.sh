@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-  echo "usage: $0 <case> <output_mesh.h5> [input_mesh.hdf]" >&2
+if [ "$#" -lt 2 ]; then
+  echo "usage: $0 <case> <output_mesh.h5> [input_mesh.hdf] [key=value ...]" >&2
   exit 1
 fi
 
