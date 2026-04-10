@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 6; ++i) op2_freestream[i] = cfg.primitive[i];
 
     std::cout << "[phase] op_init\n";
-    op_init(argc, argv, 0);
+    op_init(argc, argv, 2);
 
     // Expose solver configuration constants to OP2 code generation so CUDA
     // backends materialize matching device-side symbols.
@@ -136,6 +136,8 @@ int main(int argc, char **argv) {
     op_dat dt = op_decl_dat_temp_char(nodes, 1, "double", sizeof(double), "dt");
     op_dat grad = op_decl_dat_temp_char(nodes, NGRAD_OP2, "double", sizeof(double), "grad");
 
+    op_partition("PARMETIS", "KWAY", edges, edge_to_nodes, NULL);
+
     std::cout << "[phase] initialize\n";
     op_par_loop(initialize_q_kernel, "initialize_q_kernel", nodes,
                 op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
@@ -147,6 +149,9 @@ int main(int argc, char **argv) {
     history_l2_rho.reserve(static_cast<std::size_t>(cfg.iterations));
     history_l2_rhoE.reserve(static_cast<std::size_t>(cfg.iterations));
     history_linf_rho.reserve(static_cast<std::size_t>(cfg.iterations));
+
+    double wall_t1, wall_t2, cpu;
+    op_timers(&cpu, &wall_t1);
 
     for (int iter = 0; iter < cfg.iterations; ++iter) {
       // Keep boundary nodes in a physically admissible state before building any
@@ -385,6 +390,10 @@ int main(int argc, char **argv) {
       }
     }
 
+    op_timers(&cpu, &wall_t2);
+    double walltime = wall_t2 - wall_t1;
+    op_printf("Max total runtime = %f\n", walltime);
+
     op_par_loop(q_to_primitive_kernel, "q_to_primitive_kernel", nodes,
                 op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                 op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_WRITE));
@@ -407,6 +416,7 @@ int main(int argc, char **argv) {
 
     std::cout << "Wrote solution HDF5: " << cfg.output_file << "\n";
     std::cout << "Wrote residual CSV: " << residual_path.string() << "\n";
+    op_timing_output();
     op_exit();
     return 0;
   } catch (const std::exception &ex) {

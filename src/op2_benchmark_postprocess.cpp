@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "nssolver/hdf5_utils.hpp"
 #include "nssolver/mesh.hpp"
 #include "nssolver/physics.hpp"
 #include "nssolver/solver.hpp"
@@ -12,7 +13,7 @@
 #include "nssolver/validation.hpp"
 
 #ifdef NSSOLVER_HAVE_HDF5
-#include <H5Cpp.h>
+#include <hdf5.h>
 #endif
 
 namespace nssolver {
@@ -20,39 +21,18 @@ namespace nssolver {
 namespace {
 
 #ifdef NSSOLVER_HAVE_HDF5
-std::vector<hsize_t> read_dims(const H5::DataSet& dataset) {
-    H5::DataSpace space = dataset.getSpace();
-    const int rank = space.getSimpleExtentNdims();
-    std::vector<hsize_t> dims(static_cast<std::size_t>(rank));
-    space.getSimpleExtentDims(dims.data());
-    return dims;
-}
-
-template <typename T>
-std::vector<T> read_dataset(const H5::H5File& file, const std::string& name, const H5::PredType& type) {
-    H5::DataSet dataset = file.openDataSet(name);
-    const auto dims = read_dims(dataset);
-    std::size_t count = 1;
-    for (hsize_t dim : dims) {
-        count *= static_cast<std::size_t>(dim);
-    }
-    std::vector<T> values(count);
-    dataset.read(values.data(), type);
-    return values;
-}
-
 Mesh read_op2_mesh_hdf5(const std::string& path) {
-    H5::H5File file(path, H5F_ACC_RDONLY);
-    const auto coords = read_dataset<Real>(file, "node_coordinates", H5::PredType::NATIVE_DOUBLE);
-    const auto node_volume = read_dataset<Real>(file, "node_volume", H5::PredType::NATIVE_DOUBLE);
-    const auto wall_distance = read_dataset<Real>(file, "node_wall_distance", H5::PredType::NATIVE_DOUBLE);
-    const auto edge_nodes = read_dataset<Index>(file, "edge-->node", H5::PredType::NATIVE_INT32);
-    const auto edge_weights = read_dataset<Real>(file, "edge_weights", H5::PredType::NATIVE_DOUBLE);
-    const auto bface_nodes = read_dataset<Index>(file, "bface-->node", H5::PredType::NATIVE_INT32);
-    const auto bface_normals = read_dataset<Real>(file, "bface_normal", H5::PredType::NATIVE_DOUBLE);
-    const auto bface_area = read_dataset<Real>(file, "bface_area", H5::PredType::NATIVE_DOUBLE);
-    const auto bface_group = read_dataset<Index>(file, "bface_group", H5::PredType::NATIVE_INT32);
-    const auto bface_type = read_dataset<int>(file, "bface_type", H5::PredType::NATIVE_INT32);
+    const hdf5::Handle file = hdf5::open_file_readonly(path);
+    const auto coords = hdf5::read_dataset<Real>(file, "node_coordinates").second;
+    const auto node_volume = hdf5::read_dataset<Real>(file, "node_volume").second;
+    const auto wall_distance = hdf5::read_dataset<Real>(file, "node_wall_distance").second;
+    const auto edge_nodes = hdf5::read_dataset<Index>(file, "edge-->node").second;
+    const auto edge_weights = hdf5::read_dataset<Real>(file, "edge_weights").second;
+    const auto bface_nodes = hdf5::read_dataset<Index>(file, "bface-->node").second;
+    const auto bface_normals = hdf5::read_dataset<Real>(file, "bface_normal").second;
+    const auto bface_area = hdf5::read_dataset<Real>(file, "bface_area").second;
+    const auto bface_group = hdf5::read_dataset<Index>(file, "bface_group").second;
+    const auto bface_type = hdf5::read_dataset<int>(file, "bface_type").second;
 
     Mesh mesh;
     mesh.nodes.count = coords.size() / 3;
@@ -118,8 +98,8 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
 }
 
 FlowState read_solution_hdf5(const std::string& path, const GasModel& gas, std::size_t node_count) {
-    H5::H5File file(path, H5F_ACC_RDONLY);
-    const auto q = read_dataset<Real>(file, "q", H5::PredType::NATIVE_DOUBLE);
+    const hdf5::Handle file = hdf5::open_file_readonly(path);
+    const auto q = hdf5::read_dataset<Real>(file, "q").second;
     if (q.size() != 6 * node_count) {
         throw std::runtime_error("solution dataset 'q' has unexpected shape");
     }

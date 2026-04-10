@@ -1,8 +1,6 @@
-OP2_COMMON ?= /home/ireguly/OP2-Common
-OP2_INSTALL_PATH ?= $(OP2_COMMON)/op2
-H5CXX ?= h5c++
+H5CXX ?= g++ -I$(HDF5_SEQ_INSTALL_PATH)/include -L$(HDF5_SEQ_INSTALL_PATH)/lib -lhdf5 -ldl -lm -lz
 
-include $(OP2_COMMON)/makefiles/common.mk
+include $(OP2_INSTALL_PATH)/../makefiles/common.mk
 
 APP_NAME := nssolver_op2
 APP_SRC := nssolver_op2.cpp
@@ -27,7 +25,7 @@ HELPER_COMMON_SRCS := \
 	src/hydra_benchmark.cpp
 HELPER_COMMON_OBJS := $(patsubst src/%.cpp,$(HELPER_OBJDIR)/%.o,$(HELPER_COMMON_SRCS))
 
-include $(OP2_COMMON)/makefiles/c_app.mk
+include $(OP2_INSTALL_PATH)/../makefiles/c_app.mk
 
 .PHONY: seq genseq openmp helpers-config helpers-build helper-tools preprocess-box preprocess-bump preprocess-flatplate preprocess-hydra smoke consistency flatplate
 

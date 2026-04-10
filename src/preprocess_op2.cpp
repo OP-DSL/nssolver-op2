@@ -6,11 +6,12 @@
 #include <map>
 #include <vector>
 
+#include "nssolver/hdf5_utils.hpp"
 #include "nssolver/hydra_reader.hpp"
 #include "nssolver/mesh.hpp"
 
 #ifdef NSSOLVER_HAVE_HDF5
-#include <H5Cpp.h>
+#include <hdf5.h>
 #endif
 
 namespace nssolver {
@@ -21,25 +22,20 @@ using ParameterMap = std::map<std::string, std::string>;
 
 #ifdef NSSOLVER_HAVE_HDF5
 template <typename T>
-void write_dataset_2d(H5::H5File& file,
+void write_dataset_2d(const hdf5::Handle& file,
                       const std::string& name,
                       hsize_t dim0,
                       hsize_t dim1,
-                      const T* data,
-                      const H5::PredType& type) {
-    const hsize_t dims[2] = {dim0, dim1};
-    H5::DataSpace space(2, dims);
-    H5::DataSet dataset = file.createDataSet(name, type, space);
-    dataset.write(data, type);
+                      const T* data) {
+    hdf5::write_dataset(file, name, {dim0, dim1}, data);
 }
 
 template <typename T>
-void write_dataset_1d(H5::H5File& file,
+void write_dataset_1d(const hdf5::Handle& file,
                       const std::string& name,
                       hsize_t dim0,
-                      const T* data,
-                      const H5::PredType& type) {
-    write_dataset_2d(file, name, dim0, 1, data, type);
+                      const T* data) {
+    write_dataset_2d(file, name, dim0, 1, data);
 }
 
 std::vector<Real> interleave3(const std::vector<Real>& x, const std::vector<Real>& y, const std::vector<Real>& z) {
@@ -72,7 +68,7 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
         std::filesystem::create_directories(out_path.parent_path());
     }
 
-    H5::H5File file(output_path, H5F_ACC_TRUNC);
+    const hdf5::Handle file = hdf5::create_file_truncate(output_path);
     const auto coords = interleave3(mesh.nodes.x, mesh.nodes.y, mesh.nodes.z);
     const auto edge_weights = interleave3(mesh.edges.nx, mesh.edges.ny, mesh.edges.nz);
     const auto bface_normals = interleave3(mesh.boundary_faces.nx, mesh.boundary_faces.ny, mesh.boundary_faces.nz);
@@ -123,10 +119,9 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
         bnode_normal_compact[3 * i + 2] = bnode_normal[3 * node + 2];
     }
 
-    write_dataset_2d(file, "node_coordinates", mesh.nodes.count, 3, coords.data(), H5::PredType::NATIVE_DOUBLE);
-    write_dataset_1d(file, "node_volume", mesh.nodes.count, mesh.nodes.vol.data(), H5::PredType::NATIVE_DOUBLE);
-    write_dataset_1d(
-        file, "node_wall_distance", mesh.nodes.count, mesh.nodes.wall_dist.data(), H5::PredType::NATIVE_DOUBLE);
+    write_dataset_2d(file, "node_coordinates", mesh.nodes.count, 3, coords.data());
+    write_dataset_1d(file, "node_volume", mesh.nodes.count, mesh.nodes.vol.data());
+    write_dataset_1d(file, "node_wall_distance", mesh.nodes.count, mesh.nodes.wall_dist.data());
 
     {
         std::vector<Index> edge_nodes(2 * mesh.edges.count);
@@ -134,30 +129,26 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
             edge_nodes[2 * e + 0] = mesh.edges.node_L[e];
             edge_nodes[2 * e + 1] = mesh.edges.node_R[e];
         }
-        write_dataset_2d(file, "edge-->node", mesh.edges.count, 2, edge_nodes.data(), H5::PredType::NATIVE_INT32);
+        write_dataset_2d(file, "edge-->node", mesh.edges.count, 2, edge_nodes.data());
     }
-    write_dataset_2d(file, "edge_weights", mesh.edges.count, 3, edge_weights.data(), H5::PredType::NATIVE_DOUBLE);
+    write_dataset_2d(file, "edge_weights", mesh.edges.count, 3, edge_weights.data());
 
-    write_dataset_2d(file, "bface-->node", mesh.boundary_faces.count, 4, bface_nodes.data(), H5::PredType::NATIVE_INT32);
-    write_dataset_2d(
-        file, "bface_normal", mesh.boundary_faces.count, 3, bface_normals.data(), H5::PredType::NATIVE_DOUBLE);
-    write_dataset_1d(
-        file, "bface_area", mesh.boundary_faces.count, mesh.boundary_faces.area.data(), H5::PredType::NATIVE_DOUBLE);
-    write_dataset_1d(
-        file, "bface_group", mesh.boundary_faces.count, mesh.boundary_faces.group_id.data(), H5::PredType::NATIVE_INT32);
+    write_dataset_2d(file, "bface-->node", mesh.boundary_faces.count, 4, bface_nodes.data());
+    write_dataset_2d(file, "bface_normal", mesh.boundary_faces.count, 3, bface_normals.data());
+    write_dataset_1d(file, "bface_area", mesh.boundary_faces.count, mesh.boundary_faces.area.data());
+    write_dataset_1d(file, "bface_group", mesh.boundary_faces.count, mesh.boundary_faces.group_id.data());
     {
         std::vector<int> types(mesh.boundary_faces.count);
         for (std::size_t i = 0; i < mesh.boundary_faces.count; ++i) {
             types[i] = static_cast<int>(mesh.boundary_faces.type[i]);
         }
-        write_dataset_1d(file, "bface_type", mesh.boundary_faces.count, types.data(), H5::PredType::NATIVE_INT32);
+        write_dataset_1d(file, "bface_type", mesh.boundary_faces.count, types.data());
     }
-    write_dataset_1d(file, "bnode-->node", bnode_to_node.size(), bnode_to_node.data(), H5::PredType::NATIVE_INT32);
-    write_dataset_1d(file, "bnode_dirichlet", bnode_dirichlet.size(), bnode_dirichlet.data(), H5::PredType::NATIVE_INT32);
-    write_dataset_1d(file, "bnode_wall", bnode_wall.size(), bnode_wall.data(), H5::PredType::NATIVE_INT32);
-    write_dataset_1d(file, "bnode_slip", bnode_slip.size(), bnode_slip.data(), H5::PredType::NATIVE_INT32);
-    write_dataset_2d(
-        file, "bnode_normal", bnode_to_node.size(), 3, bnode_normal_compact.data(), H5::PredType::NATIVE_DOUBLE);
+    write_dataset_1d(file, "bnode-->node", bnode_to_node.size(), bnode_to_node.data());
+    write_dataset_1d(file, "bnode_dirichlet", bnode_dirichlet.size(), bnode_dirichlet.data());
+    write_dataset_1d(file, "bnode_wall", bnode_wall.size(), bnode_wall.data());
+    write_dataset_1d(file, "bnode_slip", bnode_slip.size(), bnode_slip.data());
+    write_dataset_2d(file, "bnode_normal", bnode_to_node.size(), 3, bnode_normal_compact.data());
 }
 #endif
 

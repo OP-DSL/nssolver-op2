@@ -1,7 +1,8 @@
 #include "nssolver/hydra_reader.hpp"
+#include "nssolver/hdf5_utils.hpp"
 
 #ifdef NSSOLVER_HAVE_HDF5
-#include <H5Cpp.h>
+#include <hdf5.h>
 #endif
 
 #include <array>
@@ -35,13 +36,9 @@ MeshValidationReport validate_mesh(const Mesh& mesh) {
 
 Mesh read_hydra_hdf5(const std::string& path) {
 #ifdef NSSOLVER_HAVE_HDF5
-    auto dataset_exists = [](const H5::H5File& file, const std::string& name) {
-        return H5Lexists(file.getId(), name.c_str(), H5P_DEFAULT) > 0;
-    };
-
-    auto choose_dataset_name = [&](const H5::H5File& file, const std::initializer_list<const char*> names) {
+    auto choose_dataset_name = [&](const hdf5::Handle& file, const std::initializer_list<const char*> names) {
         for (const char* name : names) {
-            if (dataset_exists(file, name)) {
+            if (hdf5::dataset_exists(file, name)) {
                 return std::string(name);
             }
         }
@@ -51,50 +48,6 @@ Mesh read_hydra_hdf5(const std::string& path) {
             message << ' ' << name;
         }
         throw std::runtime_error(message.str());
-    };
-
-    auto read_dims = [](const H5::DataSet& dataset) {
-        const H5::DataSpace space = dataset.getSpace();
-        const int rank = space.getSimpleExtentNdims();
-        std::vector<hsize_t> dims(static_cast<std::size_t>(rank));
-        space.getSimpleExtentDims(dims.data());
-        return dims;
-    };
-
-    auto read_real_dataset = [&](const H5::H5File& file, const std::string& name) {
-        const H5::DataSet dataset = file.openDataSet(name);
-        const auto dims = read_dims(dataset);
-        std::size_t count = 1;
-        for (hsize_t dim : dims) {
-            count *= static_cast<std::size_t>(dim);
-        }
-        std::vector<Real> values(count);
-        dataset.read(values.data(), H5::PredType::NATIVE_DOUBLE);
-        return std::pair {dims, values};
-    };
-
-    auto read_index_dataset = [&](const H5::H5File& file, const std::string& name) {
-        const H5::DataSet dataset = file.openDataSet(name);
-        const auto dims = read_dims(dataset);
-        std::size_t count = 1;
-        for (hsize_t dim : dims) {
-            count *= static_cast<std::size_t>(dim);
-        }
-        std::vector<Index> values(count);
-        dataset.read(values.data(), H5::PredType::NATIVE_INT32);
-        return std::pair {dims, values};
-    };
-
-    auto read_byte_dataset = [&](const H5::H5File& file, const std::string& name) {
-        const H5::DataSet dataset = file.openDataSet(name);
-        const auto dims = read_dims(dataset);
-        std::size_t count = 1;
-        for (hsize_t dim : dims) {
-            count *= static_cast<std::size_t>(dim);
-        }
-        std::vector<unsigned char> values(count);
-        dataset.read(values.data(), H5::PredType::NATIVE_UCHAR);
-        return std::pair {dims, values};
     };
 
     auto column_length = [](const std::vector<hsize_t>& dims) -> std::size_t {
@@ -180,10 +133,10 @@ Mesh read_hydra_hdf5(const std::string& path) {
     };
 
     try {
-        const H5::H5File file(path, H5F_ACC_RDONLY);
+        const hdf5::Handle file = hdf5::open_file_readonly(path);
 
         Mesh mesh;
-        const auto [coord_dims, coords] = read_real_dataset(file, "node_coordinates");
+        const auto [coord_dims, coords] = hdf5::read_dataset<Real>(file, "node_coordinates");
         if (coord_dims.size() != 2 || coord_dims[1] != 3) {
             throw std::runtime_error("node_coordinates must be [N,3]");
         }
@@ -200,11 +153,11 @@ Mesh read_hydra_hdf5(const std::string& path) {
         }
 
         const std::string edge_node_name = choose_dataset_name(file, {"edge-->node", "edge->node"});
-        const auto [edge_dims, edge_nodes] = read_index_dataset(file, edge_node_name);
+        const auto [edge_dims, edge_nodes] = hdf5::read_dataset<Index>(file, edge_node_name);
         if (edge_dims.size() != 2 || edge_dims[1] != 2) {
             throw std::runtime_error(edge_node_name + " must be [E,2]");
         }
-        const auto [weight_dims, edge_weights] = read_real_dataset(file, "edge_weights");
+        const auto [weight_dims, edge_weights] = hdf5::read_dataset<Real>(file, "edge_weights");
         if (weight_dims.size() != 2 || weight_dims[1] != 3 || weight_dims[0] != edge_dims[0]) {
             throw std::runtime_error("edge_weights must be [E,3]");
         }
@@ -225,7 +178,7 @@ Mesh read_hydra_hdf5(const std::string& path) {
         }
 
         const std::string hex_node_name = choose_dataset_name(file, {"hex-->node", "hex->node"});
-        const auto [hex_dims, hex_nodes] = read_index_dataset(file, hex_node_name);
+        const auto [hex_dims, hex_nodes] = hdf5::read_dataset<Index>(file, hex_node_name);
         if (hex_dims.size() != 2 || hex_dims[1] != 8) {
             throw std::runtime_error(hex_node_name + " must be [H,8]");
         }
@@ -244,8 +197,8 @@ Mesh read_hydra_hdf5(const std::string& path) {
 
         std::vector<BoundaryType> group_types;
         std::vector<std::string> group_names;
-        if (dataset_exists(file, "surface_group_type")) {
-            const auto [type_dims, surface_types] = read_index_dataset(file, "surface_group_type");
+        if (hdf5::dataset_exists(file, "surface_group_type")) {
+            const auto [type_dims, surface_types] = hdf5::read_dataset<Index>(file, "surface_group_type");
             const std::size_t group_count = column_length(type_dims);
             if (group_count == 0 || group_count != surface_types.size()) {
                 throw std::runtime_error("surface_group_type must be [G] or [G,1]");
@@ -255,8 +208,8 @@ Mesh read_hydra_hdf5(const std::string& path) {
                 group_types[group] = hydra_boundary_type(surface_types[group]);
             }
         }
-        if (dataset_exists(file, "surface_groups")) {
-            const auto [name_dims, surface_names] = read_byte_dataset(file, "surface_groups");
+        if (hdf5::dataset_exists(file, "surface_groups")) {
+            const auto [name_dims, surface_names] = hdf5::read_dataset<unsigned char>(file, "surface_groups");
             if (name_dims.size() == 2) {
                 group_names.resize(static_cast<std::size_t>(name_dims[0]));
                 const std::size_t width = static_cast<std::size_t>(name_dims[1]);
@@ -268,8 +221,8 @@ Mesh read_hydra_hdf5(const std::string& path) {
 
         const std::string quad_node_name = choose_dataset_name(file, {"quad-->node", "quad->node"});
         const std::string quad_group_name = choose_dataset_name(file, {"quad-->group", "quad->group"});
-        const auto [quad_dims, quad_nodes] = read_index_dataset(file, quad_node_name);
-        const auto [group_dims, quad_groups] = read_index_dataset(file, quad_group_name);
+        const auto [quad_dims, quad_nodes] = hdf5::read_dataset<Index>(file, quad_node_name);
+        const auto [group_dims, quad_groups] = hdf5::read_dataset<Index>(file, quad_group_name);
         if (quad_dims.size() != 2 || quad_dims[1] != 4 || column_length(group_dims) != static_cast<std::size_t>(quad_dims[0])) {
             throw std::runtime_error("quad boundary datasets have inconsistent shapes");
         }
@@ -326,8 +279,8 @@ Mesh read_hydra_hdf5(const std::string& path) {
             }
         }
 
-        if (dataset_exists(file, "node_wall_distance")) {
-            const auto [wd_dims, wall_distance] = read_real_dataset(file, "node_wall_distance");
+        if (hdf5::dataset_exists(file, "node_wall_distance")) {
+            const auto [wd_dims, wall_distance] = hdf5::read_dataset<Real>(file, "node_wall_distance");
             if (column_length(wd_dims) == mesh.nodes.count) {
                 mesh.nodes.wall_dist = wall_distance;
             } else {
@@ -350,8 +303,8 @@ Mesh read_hydra_hdf5(const std::string& path) {
         }
 
         return mesh;
-    } catch (const H5::Exception& ex) {
-        throw std::runtime_error(std::string("Failed to read Hydra HDF5: ") + ex.getCDetailMsg());
+    } catch (const std::exception& ex) {
+        throw std::runtime_error(std::string("Failed to read Hydra HDF5: ") + ex.what());
     }
 #else
     (void) path;
