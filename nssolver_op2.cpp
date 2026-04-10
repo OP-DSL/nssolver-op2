@@ -131,31 +131,45 @@ int main(int argc, char **argv) {
     std::vector<double> history_linf_rho;
     history_l2_rho.reserve(static_cast<std::size_t>(cfg.iterations));
     history_l2_rhoE.reserve(static_cast<std::size_t>(cfg.iterations));
-   history_linf_rho.reserve(static_cast<std::size_t>(cfg.iterations));
+    history_linf_rho.reserve(static_cast<std::size_t>(cfg.iterations));
+
     for (int iter = 0; iter < cfg.iterations; ++iter) {
+      // Keep boundary nodes in a physically admissible state before building any
+      // stage data. For viscous runs this imposes no-slip or slip constraints on
+      // the nodal conservative state stored on the boundary map.
       op_par_loop(enforce_boundary_node_kernel, "enforce_boundary_node_kernel", bnodes,
                   op_arg_dat(bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bnode_wall, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bnode_slip, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bnode_normal, -1, OP_ID, 3, "double", OP_READ),
                   op_arg_dat(q, 0, bnode_to_node, NVAR_OP2, "double", OP_RW));
+
+      // Save the RK baseline state used by all four stages.
       op_par_loop(copy_q_kernel, "copy_q_kernel", nodes,
                   op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                   op_arg_dat(q0, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
 
+      // Convert conservative variables to primitive form once per nonlinear
+      // iteration. The primitive field feeds gradients, timestep estimates, and
+      // all edge and boundary flux kernels.
       op_par_loop(q_to_primitive_kernel, "q_to_primitive_kernel", nodes,
                   op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                   op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_WRITE));
 
       if (cfg.second_order || cfg.include_sa) {
+        // Assemble Green-Gauss gradients from interior edges and boundary faces,
+        // then divide by the nodal control volume to obtain nodal primitive
+        // gradients used by second-order reconstruction and SA diffusion terms.
         op_par_loop(zero_grad_kernel, "zero_grad_kernel", nodes,
                     op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_WRITE));
+
         op_par_loop(edge_grad_kernel, "edge_grad_kernel", edges,
                     op_arg_dat(prim, 0, edge_to_nodes, NPRIM_OP2, "double", OP_READ),
                     op_arg_dat(prim, 1, edge_to_nodes, NPRIM_OP2, "double", OP_READ),
                     op_arg_dat(edge_weights, -1, OP_ID, 3, "double", OP_READ),
                     op_arg_dat(grad, 0, edge_to_nodes, NGRAD_OP2, "double", OP_INC),
                     op_arg_dat(grad, 1, edge_to_nodes, NGRAD_OP2, "double", OP_INC));
+
         op_par_loop(bface_grad_kernel, "bface_grad_kernel", bfaces,
                     op_arg_dat(bface_normal, -1, OP_ID, 3, "double", OP_READ),
                     op_arg_dat(prim, 0, bface_to_nodes, NPRIM_OP2, "double", OP_READ),
@@ -166,16 +180,22 @@ int main(int argc, char **argv) {
                     op_arg_dat(grad, 1, bface_to_nodes, NGRAD_OP2, "double", OP_INC),
                     op_arg_dat(grad, 2, bface_to_nodes, NGRAD_OP2, "double", OP_INC),
                     op_arg_dat(grad, 3, bface_to_nodes, NGRAD_OP2, "double", OP_INC));
+
         op_par_loop(normalize_grad_kernel, "normalize_grad_kernel", nodes,
                     op_arg_dat(node_volume, -1, OP_ID, 1, "double", OP_READ),
                     op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_RW));
       } else {
+        // First-order runs still zero the gradient storage so the flux kernels do
+        // not consume stale values.
         op_par_loop(zero_grad_kernel, "zero_grad_kernel", nodes,
                     op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_WRITE));
       }
 
+      // Estimate the local spectral radius and convert it into an explicit
+      // timestep for each node.
       op_par_loop(zero_scalar_kernel, "zero_scalar_kernel", nodes,
                   op_arg_dat(spectral, -1, OP_ID, 1, "double", OP_WRITE));
+
       op_par_loop(edge_spectral_kernel, "edge_spectral_kernel", edges,
                   op_arg_dat(prim, 0, edge_to_nodes, NPRIM_OP2, "double", OP_READ),
                   op_arg_dat(prim, 1, edge_to_nodes, NPRIM_OP2, "double", OP_READ),
@@ -192,17 +212,27 @@ int main(int argc, char **argv) {
                   op_arg_dat(dt, -1, OP_ID, 1, "double", OP_WRITE));
 
       for (int stage = 0; stage < 4; ++stage) {
+        // Reapply boundary constraints at the start of every RK stage so the
+        // stage residual is assembled from a consistent boundary state.
         op_par_loop(enforce_boundary_node_kernel, "enforce_boundary_node_kernel", bnodes,
                     op_arg_dat(bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(bnode_wall, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(bnode_slip, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(bnode_normal, -1, OP_ID, 3, "double", OP_READ),
                     op_arg_dat(q, 0, bnode_to_node, NVAR_OP2, "double", OP_RW));
+
+        // Refresh primitives from the stage state.
         op_par_loop(q_to_primitive_kernel, "q_to_primitive_kernel", nodes,
                     op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                     op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_WRITE));
+
+        // Start from a clean residual vector before edge, boundary, and source
+        // contributions are accumulated.
         op_par_loop(zero_var_kernel, "zero_var_kernel", nodes,
                     op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+
+        // Assemble interior fluxes. In second-order mode the kernel performs
+        // edge-local limited reconstruction directly from the endpoint gradients.
         op_par_loop(edge_flux_kernel, "edge_flux_kernel", edges,
                     op_arg_dat(node_coords, 0, edge_to_nodes, 3, "double", OP_READ),
                     op_arg_dat(node_coords, 1, edge_to_nodes, 3, "double", OP_READ),
@@ -213,6 +243,9 @@ int main(int argc, char **argv) {
                     op_arg_dat(edge_weights, -1, OP_ID, 3, "double", OP_READ),
                     op_arg_dat(res, 0, edge_to_nodes, NVAR_OP2, "double", OP_INC),
                     op_arg_dat(res, 1, edge_to_nodes, NVAR_OP2, "double", OP_INC));
+
+        // Add physical boundary fluxes using face-averaged interior states and
+        // the boundary-type-specific ghost construction.
         op_par_loop(boundary_flux_kernel, "boundary_flux_kernel", bfaces,
                     op_arg_dat(bface_type, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(bface_normal, -1, OP_ID, 3, "double", OP_READ),
@@ -229,12 +262,17 @@ int main(int argc, char **argv) {
                     op_arg_dat(res, 1, bface_to_nodes, NVAR_OP2, "double", OP_INC),
                     op_arg_dat(res, 2, bface_to_nodes, NVAR_OP2, "double", OP_INC),
                     op_arg_dat(res, 3, bface_to_nodes, NVAR_OP2, "double", OP_INC));
+
+        // Add the Spalart-Allmaras source contribution as a nodal update to the
+        // transported turbulence variable residual.
         op_par_loop(sa_source_kernel, "sa_source_kernel", nodes,
                     op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_READ),
                     op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_READ),
                     op_arg_dat(node_wall_distance, -1, OP_ID, 1, "double", OP_READ),
                     op_arg_dat(node_volume, -1, OP_ID, 1, "double", OP_READ),
                     op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_RW));
+
+        // Advance one stage of the classical four-stage explicit RK scheme.
         op_par_loop(rk_update_kernel, "rk_update_kernel", nodes,
                     op_arg_gbl(&stage, 1, "int", OP_READ),
                     op_arg_dat(dt, -1, OP_ID, 1, "double", OP_READ),
@@ -242,6 +280,9 @@ int main(int argc, char **argv) {
                     op_arg_dat(q0, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                     op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                     op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+
+        // Leave the stage in an enforced state so the next stage starts from
+        // physically admissible wall and slip values.
         op_par_loop(enforce_boundary_node_kernel, "enforce_boundary_node_kernel", bnodes,
                     op_arg_dat(bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(bnode_wall, -1, OP_ID, 1, "int", OP_READ),
@@ -250,14 +291,22 @@ int main(int argc, char **argv) {
                     op_arg_dat(q, 0, bnode_to_node, NVAR_OP2, "double", OP_RW));
       }
 
+      // Reassemble the final residual for convergence monitoring from the
+      // converged state at the end of the full RK iteration.
       op_par_loop(enforce_boundary_node_kernel, "enforce_boundary_node_kernel", bnodes,
                   op_arg_dat(bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bnode_wall, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bnode_slip, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bnode_normal, -1, OP_ID, 3, "double", OP_READ),
                   op_arg_dat(q, 0, bnode_to_node, NVAR_OP2, "double", OP_RW));
+
+      op_par_loop(q_to_primitive_kernel, "q_to_primitive_kernel", nodes,
+                  op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                  op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_WRITE));
+
       op_par_loop(zero_var_kernel, "zero_var_kernel", nodes,
                   op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+
       op_par_loop(edge_flux_kernel, "edge_flux_kernel", edges,
                   op_arg_dat(node_coords, 0, edge_to_nodes, 3, "double", OP_READ),
                   op_arg_dat(node_coords, 1, edge_to_nodes, 3, "double", OP_READ),
@@ -268,6 +317,7 @@ int main(int argc, char **argv) {
                   op_arg_dat(edge_weights, -1, OP_ID, 3, "double", OP_READ),
                   op_arg_dat(res, 0, edge_to_nodes, NVAR_OP2, "double", OP_INC),
                   op_arg_dat(res, 1, edge_to_nodes, NVAR_OP2, "double", OP_INC));
+
       op_par_loop(boundary_flux_kernel, "boundary_flux_kernel", bfaces,
                   op_arg_dat(bface_type, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bface_normal, -1, OP_ID, 3, "double", OP_READ),
@@ -284,6 +334,7 @@ int main(int argc, char **argv) {
                   op_arg_dat(res, 1, bface_to_nodes, NVAR_OP2, "double", OP_INC),
                   op_arg_dat(res, 2, bface_to_nodes, NVAR_OP2, "double", OP_INC),
                   op_arg_dat(res, 3, bface_to_nodes, NVAR_OP2, "double", OP_INC));
+
       op_par_loop(sa_source_kernel, "sa_source_kernel", nodes,
                   op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_READ),
                   op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_READ),
@@ -291,6 +342,7 @@ int main(int argc, char **argv) {
                   op_arg_dat(node_volume, -1, OP_ID, 1, "double", OP_READ),
                   op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_RW));
 
+      // Reduce the assembled residual field to scalar convergence metrics.
       double l2_rho_sq = 0.0;
       double l2_rhoE_sq = 0.0;
       double linf_rho = 0.0;

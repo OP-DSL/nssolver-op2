@@ -293,6 +293,8 @@ inline void compute_dt_scaled_kernel(const double *volume, const double *spectra
 }
 
 inline void edge_grad_kernel(const double *prim_l, const double *prim_r, const double *edge_weight, double *grad_l, double *grad_r) {
+  // Green-Gauss edge contribution: the edge average is multiplied by the dual
+  // face vector and added with opposite signs to the endpoint control volumes.
   for (int m = 0; m < NPRIM_OP2; ++m) {
     const double avg = 0.5 * (prim_l[m] + prim_r[m]);
     const int base = 3 * m;
@@ -307,6 +309,8 @@ inline void edge_grad_kernel(const double *prim_l, const double *prim_r, const d
 
 inline void bface_grad_kernel(const double *normal, const double *prim1, const double *prim2, const double *prim3, const double *prim4,
                               double *grad1, double *grad2, double *grad3, double *grad4) {
+  // Boundary faces contribute a face-averaged primitive value projected along
+  // the outward face normal, shared equally across the four incident nodes.
   double face_prim[NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {
     face_prim[m] = 0.25 * (prim1[m] + prim2[m] + prim3[m] + prim4[m]);
@@ -328,6 +332,8 @@ inline void normalize_grad_kernel(const double *volume, double *grad) {
 
 inline double edge_limiter_scale_op2(const double *prim_center, const double *prim_neighbor, const double *grad,
                                      const double *delta_r) {
+  // The second-order path uses a purely edge-local limiter so the OP2 loop can
+  // stay on OP_READ/OP_INC data access patterns without node-global extrema.
   double phi = 1.0;
   for (int m = 0; m < NPRIM_OP2; ++m) {
     const int base = 3 * m;
@@ -339,6 +345,9 @@ inline double edge_limiter_scale_op2(const double *prim_center, const double *pr
 
 inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const double *prim_l_center, const double *prim_r_center,
                              const double *grad_l, const double *grad_r, const double *edge_weight, double *res_l, double *res_r) {
+  // Reconstruct left and right edge states, compute the inviscid HLLC flux, and
+  // optionally subtract the thin-layer viscous correction before accumulating
+  // equal-and-opposite residuals at the edge endpoints.
   double prim_l[NPRIM_OP2];
   double prim_r[NPRIM_OP2];
   if (op2_second_order) {
@@ -376,6 +385,8 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
 inline void boundary_flux_kernel(const int *btype, const double *normal, const double *area, const double *vol1, const double *vol2,
                                  const double *vol3, const double *vol4, const double *prim1, const double *prim2, const double *prim3,
                                  const double *prim4, double *r1, double *r2, double *r3, double *r4) {
+  // Boundary faces use a face-averaged interior state, a type-specific ghost
+  // state, and an equal split of the resulting flux back to the face nodes.
   double p_int[NPRIM_OP2] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   for (int m = 0; m < NPRIM_OP2; ++m) p_int[m] = 0.25 * (prim1[m] + prim2[m] + prim3[m] + prim4[m]);
 
@@ -414,6 +425,8 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
 }
 
 inline void sa_source_kernel(const double *prim, const double *grad, const double *wall_dist, const double *volume, double *res) {
+  // The SA source term is accumulated directly into the turbulence residual
+  // component at each node after the flux terms have been assembled.
   if (!op2_include_sa) return;
   constexpr double cb1 = 0.1355;
   constexpr double cb2 = 0.622;
