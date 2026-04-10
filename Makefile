@@ -9,7 +9,8 @@ APP_SRC := nssolver_op2.cpp
 APP_INC := -I. -Iinclude
 OP2_LIBS_WITH_HDF5 := true
 
-CXXFLAGS += -std=c++20
+CXXFLAGS += -std=c++20 -include op2_kernels.h
+NVCCFLAGS += -include op2_kernels.h
 
 HELPER_DIR := .helpers
 HELPER_BINDIR := $(HELPER_DIR)/bin

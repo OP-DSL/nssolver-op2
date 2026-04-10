@@ -83,6 +83,21 @@ int main(int argc, char **argv) {
     std::cout << "[phase] op_init\n";
     op_init(argc, argv, 0);
 
+    // Expose solver configuration constants to OP2 code generation so CUDA
+    // backends materialize matching device-side symbols.
+    op_decl_const(1, "double", &op2_gamma);
+    op_decl_const(1, "double", &op2_gas_constant);
+    op_decl_const(1, "double", &op2_prandtl);
+    op_decl_const(1, "double", &op2_mu_ref);
+    op_decl_const(1, "double", &op2_t_ref);
+    op_decl_const(1, "double", &op2_sutherland);
+    op_decl_const(NPRIM_OP2, "double", op2_freestream);
+    op_decl_const(1, "double", &op2_rho_floor);
+    op_decl_const(1, "double", &op2_p_floor);
+    op_decl_const(1, "int", &op2_second_order);
+    op_decl_const(1, "int", &op2_include_viscous);
+    op_decl_const(1, "int", &op2_include_sa);
+
     std::cout << "[phase] decl sets\n";
     op_set nodes = op_decl_set_hdf5_infer_size(cfg.mesh_file.c_str(), "nodes", "node_coordinates");
     op_set edges = op_decl_set_hdf5_infer_size(cfg.mesh_file.c_str(), "edges", "edge-->node");
