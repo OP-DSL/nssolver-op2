@@ -116,6 +116,7 @@ int main(int argc, char **argv) {
     op_dat edge_weights = op_decl_dat_hdf5(edges, 3, "double", cfg.mesh_file.c_str(), "edge_weights");
     op_dat bface_normal = op_decl_dat_hdf5(bfaces, 3, "double", cfg.mesh_file.c_str(), "bface_normal");
     op_dat bface_area = op_decl_dat_hdf5(bfaces, 1, "double", cfg.mesh_file.c_str(), "bface_area");
+    op_dat bface_num_nodes = op_decl_dat_hdf5(bfaces, 1, "int", cfg.mesh_file.c_str(), "bface_num_nodes");
     op_dat bface_type = op_decl_dat_hdf5(bfaces, 1, "int", cfg.mesh_file.c_str(), "bface_type");
     op_dat bface_group = op_decl_dat_hdf5(bfaces, 1, "int", cfg.mesh_file.c_str(), "bface_group");
     (void)bface_group;
@@ -192,6 +193,7 @@ int main(int argc, char **argv) {
 
         op_par_loop(bface_grad_kernel, "bface_grad_kernel", bfaces,
                     op_arg_dat(bface_normal, -1, OP_ID, 3, "double", OP_READ),
+                    op_arg_dat(bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(prim, 0, bface_to_nodes, NPRIM_OP2, "double", OP_READ),
                     op_arg_dat(prim, 1, bface_to_nodes, NPRIM_OP2, "double", OP_READ),
                     op_arg_dat(prim, 2, bface_to_nodes, NPRIM_OP2, "double", OP_READ),
@@ -270,6 +272,7 @@ int main(int argc, char **argv) {
                     op_arg_dat(bface_type, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(bface_normal, -1, OP_ID, 3, "double", OP_READ),
                     op_arg_dat(bface_area, -1, OP_ID, 1, "double", OP_READ),
+                    op_arg_dat(bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
                     op_arg_dat(node_volume, 0, bface_to_nodes, 1, "double", OP_READ),
                     op_arg_dat(node_volume, 1, bface_to_nodes, 1, "double", OP_READ),
                     op_arg_dat(node_volume, 2, bface_to_nodes, 1, "double", OP_READ),
@@ -342,6 +345,7 @@ int main(int argc, char **argv) {
                   op_arg_dat(bface_type, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(bface_normal, -1, OP_ID, 3, "double", OP_READ),
                   op_arg_dat(bface_area, -1, OP_ID, 1, "double", OP_READ),
+                  op_arg_dat(bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
                   op_arg_dat(node_volume, 0, bface_to_nodes, 1, "double", OP_READ),
                   op_arg_dat(node_volume, 1, bface_to_nodes, 1, "double", OP_READ),
                   op_arg_dat(node_volume, 2, bface_to_nodes, 1, "double", OP_READ),

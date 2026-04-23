@@ -307,21 +307,24 @@ inline void edge_grad_kernel(const double *prim_l, const double *prim_r, const d
   }
 }
 
-inline void bface_grad_kernel(const double *normal, const double *prim1, const double *prim2, const double *prim3, const double *prim4,
+inline void bface_grad_kernel(const double *normal, const int *num_nodes, const double *prim1, const double *prim2, const double *prim3, const double *prim4,
                               double *grad1, double *grad2, double *grad3, double *grad4) {
   // Boundary faces contribute a face-averaged primitive value projected along
-  // the outward face normal, shared equally across the four incident nodes.
+  // the outward face normal, shared equally across the active incident nodes.
+  const double inv_nodes = 1.0 / std::max(num_nodes[0], 1);
   double face_prim[NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {
-    face_prim[m] = 0.25 * (prim1[m] + prim2[m] + prim3[m] + prim4[m]);
+    face_prim[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
     const int base = 3 * m;
-    const double cx = 0.25 * normal[0] * face_prim[m];
-    const double cy = 0.25 * normal[1] * face_prim[m];
-    const double cz = 0.25 * normal[2] * face_prim[m];
+    const double cx = inv_nodes * normal[0] * face_prim[m];
+    const double cy = inv_nodes * normal[1] * face_prim[m];
+    const double cz = inv_nodes * normal[2] * face_prim[m];
     grad1[base + 0] += cx; grad1[base + 1] += cy; grad1[base + 2] += cz;
     grad2[base + 0] += cx; grad2[base + 1] += cy; grad2[base + 2] += cz;
     grad3[base + 0] += cx; grad3[base + 1] += cy; grad3[base + 2] += cz;
-    grad4[base + 0] += cx; grad4[base + 1] += cy; grad4[base + 2] += cz;
+    if (num_nodes[0] == 4) {
+      grad4[base + 0] += cx; grad4[base + 1] += cy; grad4[base + 2] += cz;
+    }
   }
 }
 
@@ -382,13 +385,17 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
   }
 }
 
-inline void boundary_flux_kernel(const int *btype, const double *normal, const double *area, const double *vol1, const double *vol2,
+inline void boundary_flux_kernel(const int *btype, const double *normal, const double *area, const int *num_nodes,
+                                 const double *vol1, const double *vol2,
                                  const double *vol3, const double *vol4, const double *prim1, const double *prim2, const double *prim3,
                                  const double *prim4, double *r1, double *r2, double *r3, double *r4) {
   // Boundary faces use a face-averaged interior state, a type-specific ghost
   // state, and an equal split of the resulting flux back to the face nodes.
+  const double inv_nodes = 1.0 / std::max(num_nodes[0], 1);
   double p_int[NPRIM_OP2] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  for (int m = 0; m < NPRIM_OP2; ++m) p_int[m] = 0.25 * (prim1[m] + prim2[m] + prim3[m] + prim4[m]);
+  for (int m = 0; m < NPRIM_OP2; ++m) {
+    p_int[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
+  }
 
   const double amag = std::max(area[0], 1.0e-14);
   const double unit_normal[3] = {normal[0] / amag, normal[1] / amag, normal[2] / amag};
@@ -408,7 +415,8 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
     wall_state[1] = 0.0;
     wall_state[2] = 0.0;
     wall_state[3] = 0.0;
-    const double distance = std::max((vol1[0] + vol2[0] + vol3[0] + vol4[0]) / (4.0 * amag), 1.0e-12);
+    const double volume_sum = vol1[0] + vol2[0] + vol3[0] + (num_nodes[0] == 4 ? vol4[0] : 0.0);
+    const double distance = std::max(volume_sum / (static_cast<double>(num_nodes[0]) * amag), 1.0e-12);
     const double delta_r[3] = {distance * unit_normal[0], distance * unit_normal[1], distance * unit_normal[2]};
     double viscous[NVAR_OP2];
     thin_layer_viscous_flux_op2(p_int, wall_state, delta_r, normal, viscous);
@@ -416,11 +424,13 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
   }
 
   for (int m = 0; m < NVAR_OP2; ++m) {
-    const double share = 0.25 * flux[m];
+    const double share = inv_nodes * flux[m];
     r1[m] += share;
     r2[m] += share;
     r3[m] += share;
-    r4[m] += share;
+    if (num_nodes[0] == 4) {
+      r4[m] += share;
+    }
   }
 }
 

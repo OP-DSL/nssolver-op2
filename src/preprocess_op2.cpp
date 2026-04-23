@@ -74,6 +74,10 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
     const auto bface_normals = interleave3(mesh.boundary_faces.nx, mesh.boundary_faces.ny, mesh.boundary_faces.nz);
     const auto bface_nodes =
         interleave4(mesh.boundary_faces.n1, mesh.boundary_faces.n2, mesh.boundary_faces.n3, mesh.boundary_faces.n4);
+    std::vector<Index> bface_num_nodes(mesh.boundary_faces.count, 4);
+    if (mesh.boundary_faces.num_nodes.size() == mesh.boundary_faces.count) {
+        bface_num_nodes = mesh.boundary_faces.num_nodes;
+    }
     std::vector<Index> bnode_to_node;
     std::vector<int> bnode_dirichlet;
     std::vector<int> bnode_wall;
@@ -87,7 +91,10 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
         const std::array<Index, 4> nodes = {
             mesh.boundary_faces.n1[f], mesh.boundary_faces.n2[f], mesh.boundary_faces.n3[f], mesh.boundary_faces.n4[f]};
         const Vec3 normal {mesh.boundary_faces.nx[f], mesh.boundary_faces.ny[f], mesh.boundary_faces.nz[f]};
-        for (Index node : nodes) {
+        const std::size_t node_count =
+            mesh.boundary_faces.num_nodes.size() == mesh.boundary_faces.count ? static_cast<std::size_t>(mesh.boundary_faces.num_nodes[f]) : 4;
+        for (std::size_t local = 0; local < node_count; ++local) {
+            const Index node = nodes[local];
             is_boundary[node] = 1;
             if (mesh.boundary_faces.type[f] == BoundaryType::Farfield || mesh.boundary_faces.type[f] == BoundaryType::Inlet) {
                 is_dirichlet[node] = 1;
@@ -136,6 +143,7 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
     write_dataset_2d(file, "bface-->node", mesh.boundary_faces.count, 4, bface_nodes.data());
     write_dataset_2d(file, "bface_normal", mesh.boundary_faces.count, 3, bface_normals.data());
     write_dataset_1d(file, "bface_area", mesh.boundary_faces.count, mesh.boundary_faces.area.data());
+    write_dataset_1d(file, "bface_num_nodes", mesh.boundary_faces.count, bface_num_nodes.data());
     write_dataset_1d(file, "bface_group", mesh.boundary_faces.count, mesh.boundary_faces.group_id.data());
     {
         std::vector<int> types(mesh.boundary_faces.count);
@@ -260,6 +268,12 @@ Mesh build_mesh(const std::string& case_name, const std::string& input_path, con
         }
         return read_hydra_hdf5(input_path);
     }
+    if (case_name == "su2" || case_name == "onera_m6") {
+        if (input_path.empty()) {
+            throw std::runtime_error(case_name + " preprocessing requires an input SU2 mesh path");
+        }
+        return read_su2_mesh(input_path);
+    }
     throw std::runtime_error("unknown preprocessing case: " + case_name);
 }
 
@@ -284,7 +298,7 @@ int main(int argc, char** argv) {
     const std::string output_path = argv[2];
     int param_index = 3;
     std::string input_path;
-    if ((case_name == "hydra" || case_name == "hydra_benchmark") && argc >= 4) {
+    if ((case_name == "hydra" || case_name == "hydra_benchmark" || case_name == "su2" || case_name == "onera_m6") && argc >= 4) {
         input_path = argv[3];
         param_index = 4;
     }

@@ -15,5 +15,6 @@ struct MeshValidationReport {
 
 MeshValidationReport validate_mesh(const Mesh& mesh);
 Mesh read_hydra_hdf5(const std::string& path);
+Mesh read_su2_mesh(const std::string& path);
 
 }  // namespace nssolver

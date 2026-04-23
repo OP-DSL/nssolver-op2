@@ -33,6 +33,7 @@ struct Edges {
 struct BoundaryFaces {
     std::size_t count {};
     std::vector<Index> n1, n2, n3, n4;
+    std::vector<Index> num_nodes;
     std::vector<Real> nx, ny, nz;
     std::vector<Real> area;
     std::vector<Index> group_id;
@@ -47,6 +48,14 @@ struct Mesh {
     std::vector<std::vector<Index>> node_to_edges;
     std::vector<std::vector<Index>> node_to_boundary_faces;
 };
+
+inline std::array<Index, 4> boundary_face_nodes(const BoundaryFaces& faces, std::size_t f) {
+    return {faces.n1[f], faces.n2[f], faces.n3[f], faces.n4[f]};
+}
+
+inline std::size_t boundary_face_num_nodes(const BoundaryFaces& faces, std::size_t f) {
+    return faces.num_nodes.size() == faces.count ? static_cast<std::size_t>(faces.num_nodes[f]) : 4U;
+}
 
 struct StructuredBoxSpec {
     Index nx {5};

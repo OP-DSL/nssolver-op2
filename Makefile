@@ -1,4 +1,7 @@
-H5CXX ?= g++ -I$(HDF5_SEQ_INSTALL_PATH)/include -L$(HDF5_SEQ_INSTALL_PATH)/lib -lhdf5 -ldl -lm -lz
+HDF5_HELPER_INCLUDE ?= $(if $(HDF5_SEQ_INSTALL_PATH),$(HDF5_SEQ_INSTALL_PATH)/include,/usr/include/hdf5/serial)
+HDF5_HELPER_LIBDIR ?= $(if $(HDF5_SEQ_INSTALL_PATH),$(HDF5_SEQ_INSTALL_PATH)/lib,/usr/lib/x86_64-linux-gnu/hdf5/serial/lib)
+H5CXX ?= g++
+HELPER_LDLIBS := -L$(HDF5_HELPER_LIBDIR) -lhdf5 -ldl -lm -lz
 
 include $(OP2_INSTALL_PATH)/../makefiles/common.mk
 
@@ -22,6 +25,7 @@ HELPER_COMMON_SRCS := \
 	src/validation.cpp \
 	src/vtk_writer.cpp \
 	src/hydra_reader.cpp \
+	src/su2_reader.cpp \
 	src/hydra_benchmark.cpp
 HELPER_COMMON_OBJS := $(patsubst src/%.cpp,$(HELPER_OBJDIR)/%.o,$(HELPER_COMMON_SRCS))
 
@@ -38,7 +42,7 @@ helpers-config:
 
 helpers-build: helper-tools
 
-helper-tools: $(HELPER_BINDIR)/nssolver_demo_local $(HELPER_BINDIR)/nssolver_preprocess_op2_helper $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper
+helper-tools: $(HELPER_BINDIR)/nssolver_demo_local $(HELPER_BINDIR)/nssolver_preprocess_op2_helper $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper $(HELPER_BINDIR)/nssolver_onera_m6_validation_helper
 
 preprocess-box: helpers-build
 	./scripts/preprocess_mesh.sh box meshes-op2/box.h5
@@ -65,16 +69,19 @@ $(HELPER_OBJDIR) $(HELPER_BINDIR):
 	mkdir -p $@
 
 $(HELPER_OBJDIR)/%.o: src/%.cpp | $(HELPER_OBJDIR)
-	$(H5CXX) $(HELPER_CXXFLAGS) -c $< -o $@
+	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) -c $< -o $@
 
 $(HELPER_BINDIR)/nssolver_demo_local: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/main.o | $(HELPER_BINDIR)
-	$(H5CXX) $(HELPER_CXXFLAGS) $^ -o $@
+	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@
 
 $(HELPER_BINDIR)/nssolver_preprocess_op2_helper: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/preprocess_op2.o | $(HELPER_BINDIR)
-	$(H5CXX) $(HELPER_CXXFLAGS) $^ -o $@
+	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@
 
 $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/hdf5_to_vtk.o | $(HELPER_BINDIR)
-	$(H5CXX) $(HELPER_CXXFLAGS) $^ -o $@
+	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@
 
 $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/op2_benchmark_postprocess.o | $(HELPER_BINDIR)
-	$(H5CXX) $(HELPER_CXXFLAGS) $^ -o $@
+	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@
+
+$(HELPER_BINDIR)/nssolver_onera_m6_validation_helper: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/onera_m6_validation.o | $(HELPER_BINDIR)
+	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@

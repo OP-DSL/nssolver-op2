@@ -109,11 +109,13 @@ void add_boundary_face(Mesh& mesh,
                        const Vec3& normal,
                        BoundaryType type,
                        const std::string& name,
-                       Index group_id) {
+                       Index group_id,
+                       Index num_nodes = 4) {
     mesh.boundary_faces.n1.push_back(n1);
     mesh.boundary_faces.n2.push_back(n2);
     mesh.boundary_faces.n3.push_back(n3);
     mesh.boundary_faces.n4.push_back(n4);
+    mesh.boundary_faces.num_nodes.push_back(num_nodes);
     mesh.boundary_faces.nx.push_back(normal.x);
     mesh.boundary_faces.ny.push_back(normal.y);
     mesh.boundary_faces.nz.push_back(normal.z);
@@ -135,10 +137,10 @@ void finalize_mesh(Mesh& mesh) {
     }
 
     for (Index f = 0; f < static_cast<Index>(mesh.boundary_faces.count); ++f) {
-        const std::array<Index, 4> nodes = {
-            mesh.boundary_faces.n1[f], mesh.boundary_faces.n2[f], mesh.boundary_faces.n3[f], mesh.boundary_faces.n4[f]};
-        for (Index n : nodes) {
-            mesh.node_to_boundary_faces[n].push_back(f);
+        const auto nodes = boundary_face_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
+        const std::size_t node_count = boundary_face_num_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
+        for (std::size_t local = 0; local < node_count; ++local) {
+            mesh.node_to_boundary_faces[nodes[local]].push_back(f);
         }
     }
 }

@@ -29,6 +29,10 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
     const auto bface_nodes = hdf5::read_dataset<Index>(file, "bface-->node").second;
     const auto bface_normals = hdf5::read_dataset<Real>(file, "bface_normal").second;
     const auto bface_area = hdf5::read_dataset<Real>(file, "bface_area").second;
+    std::vector<Index> bface_num_nodes;
+    if (hdf5::dataset_exists(file, "bface_num_nodes")) {
+        bface_num_nodes = hdf5::read_dataset<Index>(file, "bface_num_nodes").second;
+    }
     const auto bface_group = hdf5::read_dataset<Index>(file, "bface_group").second;
     const auto bface_type = hdf5::read_dataset<int>(file, "bface_type").second;
 
@@ -66,6 +70,7 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
     mesh.boundary_faces.n2.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.n3.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.n4.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.num_nodes.resize(mesh.boundary_faces.count, 4);
     mesh.boundary_faces.nx.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.ny.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.nz.resize(mesh.boundary_faces.count);
@@ -78,6 +83,9 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
         mesh.boundary_faces.n2[f] = bface_nodes[4 * f + 1];
         mesh.boundary_faces.n3[f] = bface_nodes[4 * f + 2];
         mesh.boundary_faces.n4[f] = bface_nodes[4 * f + 3];
+        if (!bface_num_nodes.empty()) {
+            mesh.boundary_faces.num_nodes[f] = bface_num_nodes[f];
+        }
         mesh.boundary_faces.nx[f] = bface_normals[3 * f + 0];
         mesh.boundary_faces.ny[f] = bface_normals[3 * f + 1];
         mesh.boundary_faces.nz[f] = bface_normals[3 * f + 2];

@@ -231,6 +231,7 @@ Mesh read_hydra_hdf5(const std::string& path) {
         mesh.boundary_faces.n2.resize(mesh.boundary_faces.count);
         mesh.boundary_faces.n3.resize(mesh.boundary_faces.count);
         mesh.boundary_faces.n4.resize(mesh.boundary_faces.count);
+        mesh.boundary_faces.num_nodes.resize(mesh.boundary_faces.count, 4);
         mesh.boundary_faces.nx.resize(mesh.boundary_faces.count);
         mesh.boundary_faces.ny.resize(mesh.boundary_faces.count);
         mesh.boundary_faces.nz.resize(mesh.boundary_faces.count);
@@ -295,10 +296,10 @@ Mesh read_hydra_hdf5(const std::string& path) {
             mesh.node_to_edges[mesh.edges.node_R[e]].push_back(e);
         }
         for (Index f = 0; f < static_cast<Index>(mesh.boundary_faces.count); ++f) {
-            const std::array<Index, 4> nodes = {
-                mesh.boundary_faces.n1[f], mesh.boundary_faces.n2[f], mesh.boundary_faces.n3[f], mesh.boundary_faces.n4[f]};
-            for (Index n : nodes) {
-                mesh.node_to_boundary_faces[n].push_back(f);
+            const auto nodes = boundary_face_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
+            const std::size_t node_count = boundary_face_num_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
+            for (std::size_t local = 0; local < node_count; ++local) {
+                mesh.node_to_boundary_faces[nodes[local]].push_back(f);
             }
         }
 

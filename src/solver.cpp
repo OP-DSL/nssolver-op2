@@ -28,12 +28,12 @@ void add_gradient_contribution(std::vector<Real>& gx,
     gz[i] += scalar * area_vector.z;
 }
 
-Real face_length_scale(const Mesh& mesh, const std::array<Index, 4>& face_nodes, Real area) {
+Real face_length_scale(const Mesh& mesh, const std::array<Index, 4>& face_nodes, std::size_t face_node_count, Real area) {
     Real volume_sum = 0.0;
-    for (Index n : face_nodes) {
-        volume_sum += mesh.nodes.vol[n];
+    for (std::size_t local = 0; local < face_node_count; ++local) {
+        volume_sum += mesh.nodes.vol[face_nodes[local]];
     }
-    return std::max(volume_sum / (4.0 * area), 1.0e-12);
+    return std::max(volume_sum / (static_cast<Real>(face_node_count) * area), 1.0e-12);
 }
 
 Real vorticity_magnitude(const FlowState& state, std::size_t i) {
@@ -131,11 +131,11 @@ void enforce_boundary_state(const Mesh& mesh, const GasModel& gas, const SolverO
     std::vector<char> is_slip(mesh.nodes.count, 0);
     std::vector<Vec3> slip_normal(mesh.nodes.count);
     for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
-        const std::array<Index, 4> nodes = {
-            mesh.boundary_faces.n1[f], mesh.boundary_faces.n2[f], mesh.boundary_faces.n3[f], mesh.boundary_faces.n4[f]};
+        const auto nodes = boundary_face_nodes(mesh.boundary_faces, f);
+        const std::size_t node_count = boundary_face_num_nodes(mesh.boundary_faces, f);
         if (mesh.boundary_faces.type[f] == BoundaryType::Farfield || mesh.boundary_faces.type[f] == BoundaryType::Inlet) {
-            for (Index node : nodes) {
-                is_dirichlet[node] = 1;
+            for (std::size_t local = 0; local < node_count; ++local) {
+                is_dirichlet[nodes[local]] = 1;
             }
             continue;
         }
@@ -143,7 +143,8 @@ void enforce_boundary_state(const Mesh& mesh, const GasModel& gas, const SolverO
             continue;
         }
         const Vec3 normal {mesh.boundary_faces.nx[f], mesh.boundary_faces.ny[f], mesh.boundary_faces.nz[f]};
-        for (Index node : nodes) {
+        for (std::size_t local = 0; local < node_count; ++local) {
+            const Index node = nodes[local];
             if (mesh.boundary_faces.type[f] == BoundaryType::NoSlipWall) {
                 is_wall[node] = 1;
             } else {
@@ -218,12 +219,13 @@ void compute_gradients(const Mesh& mesh, const GasModel&, const SolverOptions&, 
     }
 
     for (Index f = 0; f < static_cast<Index>(mesh.boundary_faces.count); ++f) {
-        const std::array<Index, 4> face_nodes = {
-            mesh.boundary_faces.n1[f], mesh.boundary_faces.n2[f], mesh.boundary_faces.n3[f], mesh.boundary_faces.n4[f]};
+        const auto face_nodes = boundary_face_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
+        const std::size_t face_node_count = boundary_face_num_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
         const Vec3 area_vector {mesh.boundary_faces.nx[f], mesh.boundary_faces.ny[f], mesh.boundary_faces.nz[f]};
 
         Primitive face_primitive {};
-        for (Index n : face_nodes) {
+        for (std::size_t local = 0; local < face_node_count; ++local) {
+            const Index n = face_nodes[local];
             face_primitive.rho += state.rho[n];
             face_primitive.u += state.u[n];
             face_primitive.v += state.v[n];
@@ -231,20 +233,28 @@ void compute_gradients(const Mesh& mesh, const GasModel&, const SolverOptions&, 
             face_primitive.p += state.p[n];
             face_primitive.nu_tilde += state.nu_tilde[n];
         }
-        face_primitive.rho /= 4.0;
-        face_primitive.u /= 4.0;
-        face_primitive.v /= 4.0;
-        face_primitive.w /= 4.0;
-        face_primitive.p /= 4.0;
-        face_primitive.nu_tilde /= 4.0;
+        const Real inv_face_node_count = 1.0 / static_cast<Real>(face_node_count);
+        face_primitive.rho *= inv_face_node_count;
+        face_primitive.u *= inv_face_node_count;
+        face_primitive.v *= inv_face_node_count;
+        face_primitive.w *= inv_face_node_count;
+        face_primitive.p *= inv_face_node_count;
+        face_primitive.nu_tilde *= inv_face_node_count;
 
-        for (Index n : face_nodes) {
-            add_gradient_contribution(state.grad_rho_x, state.grad_rho_y, state.grad_rho_z, n, 0.25 * area_vector, face_primitive.rho);
-            add_gradient_contribution(state.grad_u_x, state.grad_u_y, state.grad_u_z, n, 0.25 * area_vector, face_primitive.u);
-            add_gradient_contribution(state.grad_v_x, state.grad_v_y, state.grad_v_z, n, 0.25 * area_vector, face_primitive.v);
-            add_gradient_contribution(state.grad_w_x, state.grad_w_y, state.grad_w_z, n, 0.25 * area_vector, face_primitive.w);
-            add_gradient_contribution(state.grad_p_x, state.grad_p_y, state.grad_p_z, n, 0.25 * area_vector, face_primitive.p);
-            add_gradient_contribution(state.grad_nu_x, state.grad_nu_y, state.grad_nu_z, n, 0.25 * area_vector, face_primitive.nu_tilde);
+        for (std::size_t local = 0; local < face_node_count; ++local) {
+            const Index n = face_nodes[local];
+            add_gradient_contribution(state.grad_rho_x, state.grad_rho_y, state.grad_rho_z, n, inv_face_node_count * area_vector,
+                                      face_primitive.rho);
+            add_gradient_contribution(state.grad_u_x, state.grad_u_y, state.grad_u_z, n, inv_face_node_count * area_vector,
+                                      face_primitive.u);
+            add_gradient_contribution(state.grad_v_x, state.grad_v_y, state.grad_v_z, n, inv_face_node_count * area_vector,
+                                      face_primitive.v);
+            add_gradient_contribution(state.grad_w_x, state.grad_w_y, state.grad_w_z, n, inv_face_node_count * area_vector,
+                                      face_primitive.w);
+            add_gradient_contribution(state.grad_p_x, state.grad_p_y, state.grad_p_z, n, inv_face_node_count * area_vector,
+                                      face_primitive.p);
+            add_gradient_contribution(state.grad_nu_x, state.grad_nu_y, state.grad_nu_z, n, inv_face_node_count * area_vector,
+                                      face_primitive.nu_tilde);
         }
     }
 
@@ -356,13 +366,14 @@ void assemble_residual(const Mesh& mesh, const GasModel& gas, const SolverOption
     }
 
     for (Index f = 0; f < static_cast<Index>(mesh.boundary_faces.count); ++f) {
-        const std::array<Index, 4> face_nodes = {
-            mesh.boundary_faces.n1[f], mesh.boundary_faces.n2[f], mesh.boundary_faces.n3[f], mesh.boundary_faces.n4[f]};
+        const auto face_nodes = boundary_face_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
+        const std::size_t face_node_count = boundary_face_num_nodes(mesh.boundary_faces, static_cast<std::size_t>(f));
         const Vec3 area_vector {mesh.boundary_faces.nx[f], mesh.boundary_faces.ny[f], mesh.boundary_faces.nz[f]};
         const Vec3 unit_normal = area_vector / mesh.boundary_faces.area[f];
 
         Primitive interior {};
-        for (Index n : face_nodes) {
+        for (std::size_t local = 0; local < face_node_count; ++local) {
+            const Index n = face_nodes[local];
             interior.rho += state.rho[n];
             interior.u += state.u[n];
             interior.v += state.v[n];
@@ -370,12 +381,13 @@ void assemble_residual(const Mesh& mesh, const GasModel& gas, const SolverOption
             interior.p += state.p[n];
             interior.nu_tilde += state.nu_tilde[n];
         }
-        interior.rho /= 4.0;
-        interior.u /= 4.0;
-        interior.v /= 4.0;
-        interior.w /= 4.0;
-        interior.p /= 4.0;
-        interior.nu_tilde /= 4.0;
+        const Real inv_face_node_count = 1.0 / static_cast<Real>(face_node_count);
+        interior.rho *= inv_face_node_count;
+        interior.u *= inv_face_node_count;
+        interior.v *= inv_face_node_count;
+        interior.w *= inv_face_node_count;
+        interior.p *= inv_face_node_count;
+        interior.nu_tilde *= inv_face_node_count;
 
         const Primitive ghost =
             make_boundary_ghost_state(interior, options.freestream.primitive, unit_normal, mesh.boundary_faces.type[f]);
@@ -389,7 +401,7 @@ void assemble_residual(const Mesh& mesh, const GasModel& gas, const SolverOption
             wall_state.u = 0.0;
             wall_state.v = 0.0;
             wall_state.w = 0.0;
-            const Real distance = face_length_scale(mesh, face_nodes, mesh.boundary_faces.area[f]);
+            const Real distance = face_length_scale(mesh, face_nodes, face_node_count, mesh.boundary_faces.area[f]);
             const Vec3 delta_r = distance * unit_normal;
             const FluxArray viscous_flux = thin_layer_viscous_flux(interior, wall_state, delta_r, area_vector, gas);
             for (int m = 0; m < 6; ++m) {
@@ -397,8 +409,9 @@ void assemble_residual(const Mesh& mesh, const GasModel& gas, const SolverOption
             }
         }
 
-        for (Index n : face_nodes) {
-            const Real share = 0.25;
+        for (std::size_t local = 0; local < face_node_count; ++local) {
+            const Index n = face_nodes[local];
+            const Real share = inv_face_node_count;
             state.res_rho[n] += share * net_flux[0];
             state.res_rhou[n] += share * net_flux[1];
             state.res_rhov[n] += share * net_flux[2];

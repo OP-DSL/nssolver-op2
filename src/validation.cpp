@@ -26,10 +26,11 @@ std::set<Index> unique_face_nodes(const Mesh& mesh, const std::string& face_name
         if (mesh.boundary_faces.name[f] != face_name) {
             continue;
         }
-        nodes.insert(mesh.boundary_faces.n1[f]);
-        nodes.insert(mesh.boundary_faces.n2[f]);
-        nodes.insert(mesh.boundary_faces.n3[f]);
-        nodes.insert(mesh.boundary_faces.n4[f]);
+        const auto face_nodes = boundary_face_nodes(mesh.boundary_faces, f);
+        const std::size_t face_node_count = boundary_face_num_nodes(mesh.boundary_faces, f);
+        for (std::size_t local = 0; local < face_node_count; ++local) {
+            nodes.insert(face_nodes[local]);
+        }
     }
     return nodes;
 }
@@ -157,10 +158,11 @@ void write_flat_plate_benchmark_outputs(const std::string& prefix,
             if (mesh.boundary_faces.type[f] != BoundaryType::NoSlipWall) {
                 continue;
             }
-            plate_nodes.insert(mesh.boundary_faces.n1[f]);
-            plate_nodes.insert(mesh.boundary_faces.n2[f]);
-            plate_nodes.insert(mesh.boundary_faces.n3[f]);
-            plate_nodes.insert(mesh.boundary_faces.n4[f]);
+            const auto face_nodes = boundary_face_nodes(mesh.boundary_faces, f);
+            const std::size_t face_node_count = boundary_face_num_nodes(mesh.boundary_faces, f);
+            for (std::size_t local = 0; local < face_node_count; ++local) {
+                plate_nodes.insert(face_nodes[local]);
+            }
         }
     }
     std::map<Real, WallSample> samples;

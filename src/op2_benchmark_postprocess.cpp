@@ -31,6 +31,10 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
     const auto bface_nodes = hdf5::read_dataset<Index>(file, "bface-->node").second;
     const auto bface_normals = hdf5::read_dataset<Real>(file, "bface_normal").second;
     const auto bface_area = hdf5::read_dataset<Real>(file, "bface_area").second;
+    std::vector<Index> bface_num_nodes;
+    if (hdf5::dataset_exists(file, "bface_num_nodes")) {
+        bface_num_nodes = hdf5::read_dataset<Index>(file, "bface_num_nodes").second;
+    }
     const auto bface_group = hdf5::read_dataset<Index>(file, "bface_group").second;
     const auto bface_type = hdf5::read_dataset<int>(file, "bface_type").second;
 
@@ -72,6 +76,7 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
     mesh.boundary_faces.n2.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.n3.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.n4.resize(mesh.boundary_faces.count);
+    mesh.boundary_faces.num_nodes.resize(mesh.boundary_faces.count, 4);
     mesh.boundary_faces.nx.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.ny.resize(mesh.boundary_faces.count);
     mesh.boundary_faces.nz.resize(mesh.boundary_faces.count);
@@ -84,15 +89,19 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
         mesh.boundary_faces.n2[f] = bface_nodes[4 * f + 1];
         mesh.boundary_faces.n3[f] = bface_nodes[4 * f + 2];
         mesh.boundary_faces.n4[f] = bface_nodes[4 * f + 3];
+        if (!bface_num_nodes.empty()) {
+            mesh.boundary_faces.num_nodes[f] = bface_num_nodes[f];
+        }
         mesh.boundary_faces.nx[f] = bface_normals[3 * f + 0];
         mesh.boundary_faces.ny[f] = bface_normals[3 * f + 1];
         mesh.boundary_faces.nz[f] = bface_normals[3 * f + 2];
         mesh.boundary_faces.type[f] = static_cast<BoundaryType>(bface_type[f]);
         mesh.boundary_faces.name[f] = "group_" + std::to_string(mesh.boundary_faces.group_id[f]);
-        mesh.node_to_boundary_faces[mesh.boundary_faces.n1[f]].push_back(static_cast<Index>(f));
-        mesh.node_to_boundary_faces[mesh.boundary_faces.n2[f]].push_back(static_cast<Index>(f));
-        mesh.node_to_boundary_faces[mesh.boundary_faces.n3[f]].push_back(static_cast<Index>(f));
-        mesh.node_to_boundary_faces[mesh.boundary_faces.n4[f]].push_back(static_cast<Index>(f));
+        const auto face_nodes = boundary_face_nodes(mesh.boundary_faces, f);
+        const std::size_t face_node_count = boundary_face_num_nodes(mesh.boundary_faces, f);
+        for (std::size_t local = 0; local < face_node_count; ++local) {
+            mesh.node_to_boundary_faces[face_nodes[local]].push_back(static_cast<Index>(f));
+        }
     }
     return mesh;
 }
