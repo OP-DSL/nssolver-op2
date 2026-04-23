@@ -4,7 +4,6 @@ H5CXX ?= g++
 HELPER_LDLIBS := -L$(HDF5_HELPER_LIBDIR) -lhdf5 -ldl -lm -lz
 OP2_COMMON ?= /rr-home/gihan/OP2-Common
 OP2_INSTALL_PATH ?= $(OP2_COMMON)/op2
-
 #H5CXX ?= g++ -I$(HDF5_SEQ_INSTALL_PATH)/include -L$(HDF5_SEQ_INSTALL_PATH)/lib -lhdf5 -ldl -lm -lz
 
 include $(OP2_INSTALL_PATH)/../makefiles/common.mk
