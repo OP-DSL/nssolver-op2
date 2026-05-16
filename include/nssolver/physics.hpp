@@ -19,16 +19,6 @@ struct Freestream {
     Primitive primitive;
 };
 
-Conservative primitive_to_conservative(const Primitive& primitive, const GasModel& gas);
-void cleanup_conservative(Conservative& conservative);
-Primitive conservative_to_primitive(const Conservative& conservative, const GasModel& gas);
-Real speed_of_sound(const Primitive& primitive, const GasModel& gas);
-Real total_enthalpy(const Primitive& primitive, const GasModel& gas);
 Real dynamic_viscosity(Real temperature, const GasModel& gas);
-Real thermal_conductivity(Real temperature, const GasModel& gas);
-Real eddy_viscosity(const Primitive& primitive, const GasModel& gas);
-void update_primitives(FlowState& state, const GasModel& gas);
-Primitive sample_primitive(const FlowState& state, Index i);
-Conservative sample_conservative(const FlowState& state, Index i);
 
 }  // namespace nssolver

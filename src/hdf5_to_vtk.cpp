@@ -6,7 +6,6 @@
 
 #include "nssolver/hdf5_utils.hpp"
 #include "nssolver/mesh.hpp"
-#include "nssolver/physics.hpp"
 #include "nssolver/state.hpp"
 #include "nssolver/vtk_writer.hpp"
 
@@ -95,24 +94,23 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
     return mesh;
 }
 
-FlowState read_solution_hdf5(const std::string& path, const GasModel& gas, std::size_t node_count) {
+FlowState read_solution_hdf5(const std::string& path, std::size_t node_count) {
     const hdf5::Handle file = hdf5::open_file_readonly(path);
-    const auto q = hdf5::read_dataset<Real>(file, "q").second;
-    if (q.size() != 6 * node_count) {
-        throw std::runtime_error("solution dataset 'q' has unexpected shape");
+    const auto primitive = hdf5::read_dataset<Real>(file, "primitive").second;
+    if (primitive.size() != 6 * node_count) {
+        throw std::runtime_error("solution dataset 'primitive' has unexpected shape");
     }
 
     FlowState state;
     state.resize(node_count);
     for (std::size_t i = 0; i < node_count; ++i) {
-        state.rho[i] = q[6 * i + 0];
-        state.rhou[i] = q[6 * i + 1];
-        state.rhov[i] = q[6 * i + 2];
-        state.rhow[i] = q[6 * i + 3];
-        state.rhoE[i] = q[6 * i + 4];
-        state.rhoNu[i] = q[6 * i + 5];
+        state.rho[i] = primitive[6 * i + 0];
+        state.u[i] = primitive[6 * i + 1];
+        state.v[i] = primitive[6 * i + 2];
+        state.w[i] = primitive[6 * i + 3];
+        state.p[i] = primitive[6 * i + 4];
+        state.nu_tilde[i] = primitive[6 * i + 5];
     }
-    update_primitives(state, gas);
     return state;
 }
 #endif
@@ -134,9 +132,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const GasModel gas {};
     const Mesh mesh = read_op2_mesh_hdf5(argv[1]);
-    const FlowState state = read_solution_hdf5(argv[2], gas, mesh.nodes.count);
+    const FlowState state = read_solution_hdf5(argv[2], mesh.nodes.count);
     const std::filesystem::path out_path(argv[3]);
     if (out_path.has_parent_path()) {
         std::filesystem::create_directories(out_path.parent_path());

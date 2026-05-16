@@ -20,8 +20,6 @@ HELPER_CXXFLAGS := -std=c++20 -Wall -Wextra -Wpedantic -DNSSOLVER_HAVE_HDF5=1 -I
 HELPER_COMMON_SRCS := \
 	src/mesh.cpp \
 	src/physics.cpp \
-	src/flux.cpp \
-	src/solver.cpp \
 	src/validation.cpp \
 	src/vtk_writer.cpp \
 	src/hydra_reader.cpp \
@@ -43,7 +41,7 @@ helpers-config:
 
 helpers-build: helper-tools
 
-helper-tools: $(HELPER_BINDIR)/nssolver_demo_local $(HELPER_BINDIR)/nssolver_preprocess_op2_helper $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper $(HELPER_BINDIR)/nssolver_onera_m6_validation_helper
+helper-tools: $(HELPER_BINDIR)/nssolver_preprocess_op2_helper $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper
 
 preprocess-box: helpers-build
 	./scripts/preprocess_mesh.sh box meshes-op2/box.h5
@@ -71,9 +69,6 @@ $(HELPER_OBJDIR) $(HELPER_BINDIR):
 
 $(HELPER_OBJDIR)/%.o: src/%.cpp | $(HELPER_OBJDIR)
 	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) -c $< -o $@
-
-$(HELPER_BINDIR)/nssolver_demo_local: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/main.o | $(HELPER_BINDIR)
-	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@
 
 $(HELPER_BINDIR)/nssolver_preprocess_op2_helper: $(HELPER_COMMON_OBJS) $(HELPER_OBJDIR)/preprocess_op2.o | $(HELPER_BINDIR)
 	$(H5CXX) -I$(HDF5_HELPER_INCLUDE) $(HELPER_CXXFLAGS) $^ $(HELPER_LDLIBS) -o $@

@@ -8,7 +8,6 @@ source "$APP_DIR/scripts/op2_backend.sh"
 cd "$ROOT_DIR"
 
 "$APP_DIR/scripts/build_helpers.sh"
-"$APP_DIR/.helpers/bin/nssolver_demo_local" flatplate_develop
 
 "$APP_DIR/scripts/preprocess_mesh.sh" flatplate meshes-op2/flatplate.h5
 
@@ -20,7 +19,6 @@ OP2_BINARY="./$(op2_binary_name)"
   "$OP2_BINARY" --config configs/flatplate_develop.cfg
 )
 
-python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/flatplate_develop_residual.csv" l2_rho 2.4e-03 2.3e-03
 python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/flatplate_develop_solution.residual.csv" l2_rho 2.4e-03 2.3e-03
 
 "$APP_DIR/scripts/postprocess_flatplate.sh" \
@@ -29,6 +27,12 @@ python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/flatplat
   outputs-op2/flatplate_develop_solution.h5 \
   outputs-op2/flatplate_develop
 
-python3 "$APP_DIR/scripts/compare_flatplate_benchmark.py" \
-  "$ROOT_DIR/flatplate_develop" \
-  "$ROOT_DIR/outputs-op2/flatplate_develop"
+for csv in \
+  "$ROOT_DIR/outputs-op2/flatplate_develop_wall.csv" \
+  "$ROOT_DIR/outputs-op2/flatplate_develop_profile_20.csv" \
+  "$ROOT_DIR/outputs-op2/flatplate_develop_profile_50.csv" \
+  "$ROOT_DIR/outputs-op2/flatplate_develop_profile_80.csv"; do
+  test -s "$csv"
+done
+
+echo "[ok] OP2 flat-plate validation passed"

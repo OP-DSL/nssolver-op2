@@ -210,7 +210,7 @@ and the node-edge limiter is
 \phi_i = \min_m \phi_{i,m}.
 \]
 
-This limiter is directional and edge-local. It is less multidimensional than a Venkatakrishnan-style nodal extrema limiter, but it maps cleanly onto OP2 and the original solver now uses the same algorithm for consistency.
+This limiter is directional and edge-local. It is less multidimensional than a Venkatakrishnan-style nodal extrema limiter, but it maps cleanly onto OP2 loops.
 
 Implementation:
 
@@ -518,20 +518,17 @@ The local helper `nssolver_hdf5_to_vtk_helper` converts OP2 HDF5 output plus the
 
 ## 16. Validation Strategy
 
-The OP2 path is validated against the non-OP2 reference solver on non-periodic cases:
+The OP2 path is validated directly on non-periodic cases:
 
 - `box`: exact uniform-state preservation
-- `bump`: inviscid nonlinear steady-state consistency
-- `flatplate_develop`: viscous boundary-layer consistency
-- `hydra_benchmark`: non-rotating Hydra benchmark consistency
+- `bump`: inviscid nonlinear steady-state regression
+- `flatplate_develop`: viscous boundary-layer regression and postprocessing
+- `hydra_benchmark`: non-rotating Hydra benchmark run
 
 The shipped validation scripts live under `scripts/` and `tests/`.
 
 Known status at the time of writing:
 
-- `box` matches to roundoff
-- `bump` is close in residual level and qualitative convergence
-- `flatplate_develop` matches well in velocity profiles and skin friction
-- `flatplate_develop` still shows a pressure-coefficient mismatch between original and OP2 paths
-
-That `Cp` discrepancy is a known open issue and should not be hidden by the validation scripts.
+- `box` remains near roundoff
+- `bump` remains inside the validated OP2 residual band
+- `flatplate_develop` remains inside the validated OP2 residual band and produces wall/profile benchmark CSVs

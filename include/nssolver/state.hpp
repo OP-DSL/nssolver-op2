@@ -25,9 +25,6 @@ struct FlowState {
     std::vector<Real> grad_nu_x, grad_nu_y, grad_nu_z;
 
     void resize(std::size_t n);
-    void zero_residuals();
-    void save_baseline();
-    void zero_gradients();
 };
 
 struct Primitive {

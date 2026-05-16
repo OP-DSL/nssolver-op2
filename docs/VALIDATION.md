@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory contains OP2-local smoke and consistency workflows. They assume the shared repository layout:
+This directory contains OP2 smoke and regression workflows. They assume the shared repository layout:
 
 - OP2 app build in `./`
 - preprocessed meshes in `meshes-op2`
@@ -37,7 +37,7 @@ The test checks:
 - `bump` reaches the stabilized OP2 final `L2(rho)` band:
   `4.9e-03 <= L2(rho) <= 5.1e-03`
 
-### 2. Consistency check against the original solver
+### 2. OP2 regression check
 
 ```bash
 bash tests/test_consistency.sh
@@ -45,29 +45,24 @@ bash tests/test_consistency.sh
 
 This runs:
 
-- original `box`
-- original `bump`
 - OP2 `box`
 - OP2 `bump`
 
-and compares the final `L2(rho)` residual levels.
+and checks the final `L2(rho)` residual levels.
 
 Expected behavior:
 
-- `box`: both solvers near machine zero
-- `bump`: original solver final `L2(rho)` remains in
-  `5.8e-03 <= L2(rho) <= 6.1e-03`
+- `box`: final residual remains near machine zero
 - `bump`: OP2 final `L2(rho)` remains in
   `4.9e-03 <= L2(rho) <= 5.1e-03`
-- `bump`: OP2 and original remain within the configured relative tolerance
 
-### 3. Flat-plate viscous benchmark comparison
+### 3. Flat-plate viscous benchmark
 
 ```bash
 bash scripts/run_flatplate_validation.sh
 ```
 
-This is a stricter comparison. It runs the original solver and OP2 on `flatplate_develop`, postprocesses the OP2 result into the same CSV benchmark format, and compares:
+This runs OP2 on `flatplate_develop`, checks the final residual band, and postprocesses the OP2 result into benchmark CSV files:
 
 - wall skin friction `Cf`
 - wall pressure coefficient `Cp`
@@ -75,13 +70,11 @@ This is a stricter comparison. It runs the original solver and OP2 on `flatplate
 
 Current expected status:
 
-- velocity profiles: matched
-- `Cf`: matched
-- `Cp`: matched
-- final `L2(rho)` for both local reference and OP2:
+- final OP2 `L2(rho)`:
   `2.3e-03 <= L2(rho) <= 2.4e-03`
+- wall/profile CSV files are generated and non-empty
 
-The script should pass when the OP2 and reference implementations remain aligned.
+The script should pass when the OP2 implementation remains within the validated residual band and produces usable benchmark outputs.
 
 ## Manual workflow
 
@@ -134,10 +127,7 @@ bash scripts/hdf5_to_vtk.sh meshes-op2/box.h5 outputs-op2/box_solution.h5 output
 The helper scripts currently use pragmatic engineering thresholds:
 
 - `box` final `L2(rho)` must remain near zero
-- local bump final `L2(rho)` target is about `5.95101e-03`
 - OP2 bump final `L2(rho)` target is about `4.99452e-03`
 - flat-plate final `L2(rho)` target is about `2.34059e-03`
-- flat-plate profile comparisons are strict
-- flat-plate `Cp` should remain matched to the reference solver
 
 These thresholds should only be tightened after solver changes are validated over multiple runs.

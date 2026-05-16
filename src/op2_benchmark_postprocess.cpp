@@ -7,8 +7,6 @@
 
 #include "nssolver/hdf5_utils.hpp"
 #include "nssolver/mesh.hpp"
-#include "nssolver/physics.hpp"
-#include "nssolver/solver.hpp"
 #include "nssolver/state.hpp"
 #include "nssolver/validation.hpp"
 
@@ -108,22 +106,22 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
 
 FlowState read_solution_hdf5(const std::string& path, const GasModel& gas, std::size_t node_count) {
     const hdf5::Handle file = hdf5::open_file_readonly(path);
-    const auto q = hdf5::read_dataset<Real>(file, "q").second;
-    if (q.size() != 6 * node_count) {
-        throw std::runtime_error("solution dataset 'q' has unexpected shape");
+    const auto primitive = hdf5::read_dataset<Real>(file, "primitive").second;
+    if (primitive.size() != 6 * node_count) {
+        throw std::runtime_error("solution dataset 'primitive' has unexpected shape");
     }
 
     FlowState state;
     state.resize(node_count);
     for (std::size_t i = 0; i < node_count; ++i) {
-        state.rho[i] = q[6 * i + 0];
-        state.rhou[i] = q[6 * i + 1];
-        state.rhov[i] = q[6 * i + 2];
-        state.rhow[i] = q[6 * i + 3];
-        state.rhoE[i] = q[6 * i + 4];
-        state.rhoNu[i] = q[6 * i + 5];
+        state.rho[i] = primitive[6 * i + 0];
+        state.u[i] = primitive[6 * i + 1];
+        state.v[i] = primitive[6 * i + 2];
+        state.w[i] = primitive[6 * i + 3];
+        state.p[i] = primitive[6 * i + 4];
+        state.nu_tilde[i] = primitive[6 * i + 5];
+        state.T[i] = state.p[i] / (state.rho[i] * gas.gas_constant);
     }
-    update_primitives(state, gas);
     return state;
 }
 #endif
@@ -151,8 +149,8 @@ int main(int argc, char** argv) {
     }
 
     GasModel gas {};
-    SolverOptions options {};
-    options.freestream.primitive = Primitive {.rho = 1.225, .u = 20.0, .v = 0.0, .w = 0.0, .p = 101325.0, .nu_tilde = 0.0};
+    BenchmarkOptions options {};
+    options.freestream = Primitive {.rho = 1.225, .u = 20.0, .v = 0.0, .w = 0.0, .p = 101325.0, .nu_tilde = 0.0};
     const Mesh mesh = read_op2_mesh_hdf5(argv[2]);
     const FlowState state = read_solution_hdf5(argv[3], gas, mesh.nodes.count);
     const std::filesystem::path prefix_path(argv[4]);

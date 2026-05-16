@@ -139,7 +139,7 @@ Available procedural cases:
   `thickness_ratio=0.12`, `camber_ratio=0.0`, `camber_position=0.4`,
   `vertical_offset=0.0`, `wall_normal_growth=4.0`.
 
-Reference solver setups for the documented defaults:
+OP2 solver setups for the documented defaults:
 
 - [configs/bump3d.cfg](/home/ireguly/nssolver-op2/configs/bump3d.cfg): stronger inviscid bump-channel run using `meshes-op2/bump3d.h5`
 - [configs/axisymmetric_body.cfg](/home/ireguly/nssolver-op2/configs/axisymmetric_body.cfg): stronger inviscid body-of-revolution run using `meshes-op2/axisymmetric_body.h5`
@@ -155,7 +155,7 @@ bash tests/test_consistency.sh
 bash scripts/run_flatplate_validation.sh
 ```
 
-The flat-plate script is expected to pass; the OP2 and reference implementations now match in `Cp`, `Cf`, and sampled velocity profiles.
+The flat-plate script checks the OP2 residual target and verifies that wall/profile benchmark CSV outputs are produced.
 
 ## HDF5 Mesh Datasets
 
