@@ -20,6 +20,7 @@ struct Freestream {
 };
 
 Conservative primitive_to_conservative(const Primitive& primitive, const GasModel& gas);
+void cleanup_conservative(Conservative& conservative);
 Primitive conservative_to_primitive(const Conservative& conservative, const GasModel& gas);
 Real speed_of_sound(const Primitive& primitive, const GasModel& gas);
 Real total_enthalpy(const Primitive& primitive, const GasModel& gas);

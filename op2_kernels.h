@@ -46,6 +46,15 @@ inline void primitive_to_conservative_op2(const double *p, double *q) {
   q[5] = p[0] * p[5];
 }
 
+inline void cleanup_conservative_op2(double *q) {
+  const double rho = std::max(std::abs(q[0]), 1.0e-12);
+  const double momentum_floor = 1.0e-7 * rho;
+  for (int m = 1; m <= 3; ++m) {
+    if (std::abs(q[m]) <= momentum_floor) q[m] = 0.0;
+  }
+  if (std::abs(q[5]) <= 1.0e-14 * rho) q[5] = 0.0;
+}
+
 inline void conservative_to_primitive_op2(const double *q, double *p) {
   const double rho = std::max(q[0], 1.0e-12);
   p[0] = rho;
@@ -97,9 +106,61 @@ inline void physical_flux_op2(const double *p, const double *q, const double *no
   f[5] = q[5] * un;
 }
 
+inline void rusanov_flux_op2(const double *pl, const double *ql, const double *pr, const double *qr, const double *area_vec,
+                             double *flux) {
+  const double area = vec_norm3(area_vec);
+  if (area <= 1.0e-300) {
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = 0.0;
+    return;
+  }
+  const double unit_normal[3] = {area_vec[0] / area, area_vec[1] / area, area_vec[2] / area};
+  double f_l[NVAR_OP2];
+  double f_r[NVAR_OP2];
+  physical_flux_op2(pl, ql, area_vec, f_l);
+  physical_flux_op2(pr, qr, area_vec, f_r);
+
+  const double lambda = area * std::max(std::abs(normal_velocity_op2(pl, unit_normal)) + speed_of_sound_op2(pl),
+                                        std::abs(normal_velocity_op2(pr, unit_normal)) + speed_of_sound_op2(pr));
+  for (int m = 0; m < NVAR_OP2; ++m) {
+    flux[m] = 0.5 * (f_l[m] + f_r[m]) - 0.5 * lambda * (qr[m] - ql[m]);
+  }
+}
+
+inline void hll_flux_op2(const double *pl, const double *ql, const double *pr, const double *qr, const double *area_vec,
+                         double s_l, double s_r, double *flux) {
+  double f_l[NVAR_OP2];
+  double f_r[NVAR_OP2];
+  physical_flux_op2(pl, ql, area_vec, f_l);
+  physical_flux_op2(pr, qr, area_vec, f_r);
+
+  if (0.0 <= s_l) {
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_l[m];
+    return;
+  }
+  if (0.0 >= s_r) {
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_r[m];
+    return;
+  }
+
+  const double area = vec_norm3(area_vec);
+  const double denom = s_r - s_l;
+  const double scale = std::max(std::abs(s_l) + std::abs(s_r), 1.0);
+  if (!std::isfinite(denom) || std::abs(denom) <= 1.0e-12 * scale) {
+    rusanov_flux_op2(pl, ql, pr, qr, area_vec, flux);
+    return;
+  }
+  for (int m = 0; m < NVAR_OP2; ++m) {
+    flux[m] = (s_r * f_l[m] - s_l * f_r[m] + s_l * s_r * area * (qr[m] - ql[m])) / denom;
+  }
+}
+
 inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, const double *qr, const double *area_vec,
                           double *flux) {
   const double area = vec_norm3(area_vec);
+  if (area <= 1.0e-300) {
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = 0.0;
+    return;
+  }
   const double unit_normal[3] = {area_vec[0] / area, area_vec[1] / area, area_vec[2] / area};
 
   const double un_l = normal_velocity_op2(pl, unit_normal);
@@ -109,20 +170,48 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
 
   const double s_l = std::min(un_l - a_l, un_r - a_r);
   const double s_r = std::max(un_l + a_l, un_r + a_r);
-  const double numerator = pr[4] - pl[4] + ql[0] * un_l * (s_l - un_l) - qr[0] * un_r * (s_r - un_r);
-  const double denominator = ql[0] * (s_l - un_l) - qr[0] * (s_r - un_r);
-  const double s_m = numerator / denominator;
 
   double f_l[NVAR_OP2];
   double f_r[NVAR_OP2];
   physical_flux_op2(pl, ql, area_vec, f_l);
   physical_flux_op2(pr, qr, area_vec, f_r);
 
+  if (0.0 <= s_l) {
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_l[m];
+    return;
+  }
+  if (0.0 >= s_r) {
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_r[m];
+    return;
+  }
+
+  const double numerator = pr[4] - pl[4] + ql[0] * un_l * (s_l - un_l) - qr[0] * un_r * (s_r - un_r);
+  const double denominator = ql[0] * (s_l - un_l) - qr[0] * (s_r - un_r);
+  const double denominator_scale = std::max(std::abs(ql[0] * (s_l - un_l)) + std::abs(qr[0] * (s_r - un_r)), 1.0);
+  if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-12 * denominator_scale) {
+    hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
+    return;
+  }
+  const double s_m = numerator / denominator;
+  if (!std::isfinite(s_m) || s_m <= s_l || s_m >= s_r) {
+    hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
+    return;
+  }
+  const double contact_scale = std::max(std::abs(s_l) + std::abs(s_r) + std::abs(s_m), 1.0);
+  if (std::abs(s_m) <= 1.0e-8 * contact_scale) {
+    hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
+    return;
+  }
+
   const double p_star_l = pl[4] + ql[0] * (s_l - un_l) * (s_m - un_l);
   const double p_star_r = pr[4] + qr[0] * (s_r - un_r) * (s_m - un_r);
 
   auto star_state = [&](const double *p, const double *q, double s_k, double un_k, double p_star, double *q_star) {
-    const double factor = q[0] * (s_k - un_k) / (s_k - s_m);
+    const double speed_gap = s_k - s_m;
+    const double acoustic_gap = s_k - un_k;
+    const double gap_scale = std::max(std::abs(s_k) + std::abs(s_m) + std::abs(un_k), 1.0);
+    if (std::abs(speed_gap) <= 1.0e-12 * gap_scale || std::abs(acoustic_gap) <= 1.0e-12 * gap_scale) return false;
+    const double factor = q[0] * acoustic_gap / speed_gap;
     const double tangential[3] = {
         p[1] - un_k * unit_normal[0],
         p[2] - un_k * unit_normal[1],
@@ -134,28 +223,33 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
         tangential[2] + s_m * unit_normal[2],
     };
     const double e_total = q[4] / q[0];
-    const double star_energy = factor * (e_total + (s_m - un_k) * (p_star / (q[0] * (s_k - un_k)) + s_m));
+    const double star_energy = factor * (e_total + (s_m - un_k) * (p_star / (q[0] * acoustic_gap) + s_m));
     q_star[0] = factor;
     q_star[1] = factor * star_velocity[0];
     q_star[2] = factor * star_velocity[1];
     q_star[3] = factor * star_velocity[2];
     q_star[4] = star_energy;
     q_star[5] = factor * p[5];
+    for (int m = 0; m < NVAR_OP2; ++m) {
+      if (!std::isfinite(q_star[m])) return false;
+    }
+    return true;
   };
 
-  double q_star_l[NVAR_OP2];
-  double q_star_r[NVAR_OP2];
-  star_state(pl, ql, s_l, un_l, p_star_l, q_star_l);
-  star_state(pr, qr, s_r, un_r, p_star_r, q_star_r);
-
-  if (0.0 <= s_l) {
-    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_l[m];
-  } else if (s_l <= 0.0 && 0.0 <= s_m) {
+  if (s_m >= 0.0) {
+    double q_star_l[NVAR_OP2];
+    if (!star_state(pl, ql, s_l, un_l, p_star_l, q_star_l)) {
+      hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
+      return;
+    }
     for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_l[m] + s_l * area * (q_star_l[m] - ql[m]);
-  } else if (s_m <= 0.0 && 0.0 <= s_r) {
-    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_r[m] + s_r * area * (q_star_r[m] - qr[m]);
   } else {
-    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_r[m];
+    double q_star_r[NVAR_OP2];
+    if (!star_state(pr, qr, s_r, un_r, p_star_r, q_star_r)) {
+      hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
+      return;
+    }
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_r[m] + s_r * area * (q_star_r[m] - qr[m]);
   }
 }
 
@@ -475,6 +569,7 @@ inline void rk_update_kernel(const int *rk_stage, const double *dt, const double
   static const double alpha[4] = {0.25, 1.0 / 3.0, 0.5, 1.0};
   const double factor = alpha[*rk_stage] * dt[0] / volume[0];
   for (int m = 0; m < NVAR_OP2; ++m) q[m] = q0[m] - factor * res[m];
+  cleanup_conservative_op2(q);
   double prim[NPRIM_OP2];
   conservative_to_primitive_op2(q, prim);
   if (!std::isfinite(q[0]) || !std::isfinite(q[4]) || q[0] < op2_rho_floor || prim[4] < op2_p_floor) {

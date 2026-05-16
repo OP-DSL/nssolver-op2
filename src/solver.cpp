@@ -449,8 +449,16 @@ void rk4_step(const Mesh& mesh, const GasModel& gas, const SolverOptions& option
             state.rhoE[i] = state.rhoE0[i] - factor * state.res_rhoE[i];
             state.rhoNu[i] = state.rhoNu0[i] - factor * state.res_rhoNu[i];
 
-            const Primitive primitive = conservative_to_primitive(
-                {state.rho[i], state.rhou[i], state.rhov[i], state.rhow[i], state.rhoE[i], state.rhoNu[i]}, gas);
+            Conservative conservative {state.rho[i], state.rhou[i], state.rhov[i], state.rhow[i], state.rhoE[i], state.rhoNu[i]};
+            cleanup_conservative(conservative);
+            state.rho[i] = conservative.rho;
+            state.rhou[i] = conservative.rhou;
+            state.rhov[i] = conservative.rhov;
+            state.rhow[i] = conservative.rhow;
+            state.rhoE[i] = conservative.rhoE;
+            state.rhoNu[i] = conservative.rhoNu;
+
+            const Primitive primitive = conservative_to_primitive(conservative, gas);
             if (!std::isfinite(state.rho[i]) || !std::isfinite(state.rhoE[i]) || state.rho[i] < options.rho_floor ||
                 primitive.p < options.p_floor) {
                 state.rho[i] = state.rho0[i];

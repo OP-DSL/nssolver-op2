@@ -20,6 +20,9 @@ OP2_BINARY="./$(op2_binary_name)"
   "$OP2_BINARY" --config configs/flatplate_develop.cfg
 )
 
+python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/flatplate_develop_residual.csv" l2_rho 2.4e-03 2.3e-03
+python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/flatplate_develop_solution.residual.csv" l2_rho 2.4e-03 2.3e-03
+
 "$APP_DIR/scripts/postprocess_flatplate.sh" \
   flatplate_develop \
   meshes-op2/flatplate.h5 \

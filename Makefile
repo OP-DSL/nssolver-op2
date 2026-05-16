@@ -10,8 +10,8 @@ APP_SRC := nssolver_op2.cpp
 APP_INC := -I. -Iinclude
 OP2_LIBS_WITH_HDF5 := true
 
-CXXFLAGS += -std=c++20 -include op2_kernels.h
-NVCCFLAGS += -include op2_kernels.h
+CXXFLAGS += -std=c++2a -include op2_kernels.h
+NVCCFLAGS += -std=c++17 -include op2_kernels.h -Xcompiler=-march=native
 
 HELPER_DIR := .helpers
 HELPER_BINDIR := $(HELPER_DIR)/bin
@@ -31,11 +31,12 @@ HELPER_COMMON_OBJS := $(patsubst src/%.cpp,$(HELPER_OBJDIR)/%.o,$(HELPER_COMMON_
 
 include $(OP2_INSTALL_PATH)/../makefiles/c_app.mk
 
-.PHONY: seq genseq openmp helpers-config helpers-build helper-tools preprocess-box preprocess-bump preprocess-flatplate preprocess-hydra smoke consistency flatplate
+.PHONY: seq genseq openmp cuda helpers-config helpers-build helper-tools preprocess-box preprocess-bump preprocess-flatplate preprocess-hydra smoke consistency flatplate
 
 seq: $(APP_NAME)_seq
 genseq: $(APP_NAME)_genseq
 openmp: $(APP_NAME)_openmp
+cuda: $(APP_NAME)_cuda
 
 helpers-config:
 	./scripts/configure_helpers.sh

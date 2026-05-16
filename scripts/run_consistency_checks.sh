@@ -24,10 +24,12 @@ OP2_BINARY="./$(op2_binary_name)"
 
 python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/box_residual.csv" l2_rho 1.0e-12
 python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/box_solution.residual.csv" l2_rho 1.0e-12
+python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/bump_residual.csv" l2_rho 6.1e-03 5.8e-03
+python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/bump_solution.residual.csv" l2_rho 5.1e-03 4.9e-03
 python3 "$APP_DIR/scripts/compare_final_residual.py" \
   "$ROOT_DIR/bump_residual.csv" \
   "$ROOT_DIR/outputs-op2/bump_solution.residual.csv" \
   l2_rho \
-  2.0e-01
+  1.7e-01
 
 echo "[ok] OP2 consistency checks passed"

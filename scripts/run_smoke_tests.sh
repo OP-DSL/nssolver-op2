@@ -21,6 +21,6 @@ OP2_BINARY="./$(op2_binary_name)"
 )
 
 python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/box_solution.residual.csv" l2_rho 1.0e-12
-python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/bump_solution.residual.csv" l2_rho 8.0e-03
+python3 "$APP_DIR/scripts/check_residual_csv.py" "$ROOT_DIR/outputs-op2/bump_solution.residual.csv" l2_rho 5.1e-03 4.9e-03
 
 echo "[ok] OP2 smoke tests passed"

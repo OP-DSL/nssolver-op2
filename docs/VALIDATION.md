@@ -34,7 +34,8 @@ This covers:
 The test checks:
 
 - `box` preserves the uniform state to near roundoff
-- `bump` reaches a finite residual in the expected range
+- `bump` reaches the stabilized OP2 final `L2(rho)` band:
+  `4.9e-03 <= L2(rho) <= 5.1e-03`
 
 ### 2. Consistency check against the original solver
 
@@ -54,7 +55,11 @@ and compares the final `L2(rho)` residual levels.
 Expected behavior:
 
 - `box`: both solvers near machine zero
-- `bump`: OP2 and original should be within the configured relative tolerance
+- `bump`: original solver final `L2(rho)` remains in
+  `5.8e-03 <= L2(rho) <= 6.1e-03`
+- `bump`: OP2 final `L2(rho)` remains in
+  `4.9e-03 <= L2(rho) <= 5.1e-03`
+- `bump`: OP2 and original remain within the configured relative tolerance
 
 ### 3. Flat-plate viscous benchmark comparison
 
@@ -73,6 +78,8 @@ Current expected status:
 - velocity profiles: matched
 - `Cf`: matched
 - `Cp`: matched
+- final `L2(rho)` for both local reference and OP2:
+  `2.3e-03 <= L2(rho) <= 2.4e-03`
 
 The script should pass when the OP2 and reference implementations remain aligned.
 
@@ -127,7 +134,9 @@ bash scripts/hdf5_to_vtk.sh meshes-op2/box.h5 outputs-op2/box_solution.h5 output
 The helper scripts currently use pragmatic engineering thresholds:
 
 - `box` final `L2(rho)` must remain near zero
-- `bump` final `L2(rho)` must remain bounded and close to the original solver
+- local bump final `L2(rho)` target is about `5.95101e-03`
+- OP2 bump final `L2(rho)` target is about `4.99452e-03`
+- flat-plate final `L2(rho)` target is about `2.34059e-03`
 - flat-plate profile comparisons are strict
 - flat-plate `Cp` should remain matched to the reference solver
 

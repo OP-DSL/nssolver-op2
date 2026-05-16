@@ -15,6 +15,65 @@ FluxArray conservative_array(const Conservative& q) {
     return {q.rho, q.rhou, q.rhov, q.rhow, q.rhoE, q.rhoNu};
 }
 
+FluxArray rusanov_flux(const Primitive& left_p,
+                       const Conservative& left_q,
+                       const Primitive& right_p,
+                       const Conservative& right_q,
+                       const Vec3& area_vector,
+                       const GasModel& gas) {
+    const Real area = norm(area_vector);
+    if (area <= 1.0e-300) {
+        return {};
+    }
+    const Vec3 unit_normal = area_vector / area;
+    const FluxArray f_l = physical_flux(left_p, left_q, area_vector, gas);
+    const FluxArray f_r = physical_flux(right_p, right_q, area_vector, gas);
+    const FluxArray q_l = conservative_array(left_q);
+    const FluxArray q_r = conservative_array(right_q);
+    const Real lambda = area * std::max(std::abs(normal_velocity(left_p, unit_normal)) + speed_of_sound(left_p, gas),
+                                        std::abs(normal_velocity(right_p, unit_normal)) + speed_of_sound(right_p, gas));
+
+    FluxArray flux {};
+    for (int m = 0; m < 6; ++m) {
+        flux[m] = 0.5 * (f_l[m] + f_r[m]) - 0.5 * lambda * (q_r[m] - q_l[m]);
+    }
+    return flux;
+}
+
+FluxArray hll_flux(const Primitive& left_p,
+                   const Conservative& left_q,
+                   const Primitive& right_p,
+                   const Conservative& right_q,
+                   const Vec3& area_vector,
+                   const GasModel& gas,
+                   Real s_l,
+                   Real s_r) {
+    const FluxArray f_l = physical_flux(left_p, left_q, area_vector, gas);
+    const FluxArray f_r = physical_flux(right_p, right_q, area_vector, gas);
+    const FluxArray q_l = conservative_array(left_q);
+    const FluxArray q_r = conservative_array(right_q);
+
+    if (0.0 <= s_l) {
+        return f_l;
+    }
+    if (0.0 >= s_r) {
+        return f_r;
+    }
+
+    const Real area = norm(area_vector);
+    const Real denominator = s_r - s_l;
+    const Real scale = std::max(std::abs(s_l) + std::abs(s_r), 1.0);
+    if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-12 * scale) {
+        return rusanov_flux(left_p, left_q, right_p, right_q, area_vector, gas);
+    }
+
+    FluxArray flux {};
+    for (int m = 0; m < 6; ++m) {
+        flux[m] = (s_r * f_l[m] - s_l * f_r[m] + s_l * s_r * area * (q_r[m] - q_l[m])) / denominator;
+    }
+    return flux;
+}
+
 }  // namespace
 
 FluxArray physical_flux(const Primitive& primitive, const Conservative& conservative, const Vec3& normal, const GasModel&) {
@@ -36,6 +95,9 @@ FluxArray hllc_flux(const Primitive& left_p,
                     const Vec3& area_vector,
                     const GasModel& gas) {
     const Real area = norm(area_vector);
+    if (area <= 1.0e-300) {
+        return {};
+    }
     const Vec3 unit_normal = area_vector / area;
 
     const Real un_l = normal_velocity(left_p, unit_normal);
@@ -46,27 +108,53 @@ FluxArray hllc_flux(const Primitive& left_p,
     const Real s_l = std::min(un_l - a_l, un_r - a_r);
     const Real s_r = std::max(un_l + a_l, un_r + a_r);
 
-    const Real numerator = right_p.p - left_p.p + left_q.rho * un_l * (s_l - un_l) - right_q.rho * un_r * (s_r - un_r);
-    const Real denominator = left_q.rho * (s_l - un_l) - right_q.rho * (s_r - un_r);
-    const Real s_m = numerator / denominator;
-
     const FluxArray f_l = physical_flux(left_p, left_q, area_vector, gas);
     const FluxArray f_r = physical_flux(right_p, right_q, area_vector, gas);
     const FluxArray q_l = conservative_array(left_q);
     const FluxArray q_r = conservative_array(right_q);
 
+    if (0.0 <= s_l) {
+        return f_l;
+    }
+    if (0.0 >= s_r) {
+        return f_r;
+    }
+
+    const Real numerator = right_p.p - left_p.p + left_q.rho * un_l * (s_l - un_l) - right_q.rho * un_r * (s_r - un_r);
+    const Real denominator = left_q.rho * (s_l - un_l) - right_q.rho * (s_r - un_r);
+    const Real denominator_scale = std::max(std::abs(left_q.rho * (s_l - un_l)) +
+                                                std::abs(right_q.rho * (s_r - un_r)),
+                                            1.0);
+    if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-12 * denominator_scale) {
+        return hll_flux(left_p, left_q, right_p, right_q, area_vector, gas, s_l, s_r);
+    }
+    const Real s_m = numerator / denominator;
+    if (!std::isfinite(s_m) || s_m <= s_l || s_m >= s_r) {
+        return hll_flux(left_p, left_q, right_p, right_q, area_vector, gas, s_l, s_r);
+    }
+    const Real contact_scale = std::max(std::abs(s_l) + std::abs(s_r) + std::abs(s_m), 1.0);
+    if (std::abs(s_m) <= 1.0e-8 * contact_scale) {
+        return hll_flux(left_p, left_q, right_p, right_q, area_vector, gas, s_l, s_r);
+    }
+
     const Real p_star_l = left_p.p + left_q.rho * (s_l - un_l) * (s_m - un_l);
     const Real p_star_r = right_p.p + right_q.rho * (s_r - un_r) * (s_m - un_r);
 
-    auto star_state = [&](const Primitive& p, const Conservative& q, Real s_k, Real un_k, Real p_star) {
-        const Real factor = q.rho * (s_k - un_k) / (s_k - s_m);
+    auto star_state = [&](const Primitive& p, const Conservative& q, Real s_k, Real un_k, Real p_star, FluxArray& q_star) {
+        const Real speed_gap = s_k - s_m;
+        const Real acoustic_gap = s_k - un_k;
+        const Real gap_scale = std::max(std::abs(s_k) + std::abs(s_m) + std::abs(un_k), 1.0);
+        if (std::abs(speed_gap) <= 1.0e-12 * gap_scale || std::abs(acoustic_gap) <= 1.0e-12 * gap_scale) {
+            return false;
+        }
+        const Real factor = q.rho * acoustic_gap / speed_gap;
         const Vec3 velocity {p.u, p.v, p.w};
         const Vec3 tangential = velocity - un_k * unit_normal;
         const Vec3 star_velocity = tangential + s_m * unit_normal;
         const Real e_total = q.rhoE / q.rho;
-        const Real star_energy = factor * (e_total + (s_m - un_k) * (p_star / (q.rho * (s_k - un_k)) + s_m));
+        const Real star_energy = factor * (e_total + (s_m - un_k) * (p_star / (q.rho * acoustic_gap) + s_m));
 
-        return FluxArray {
+        q_star = FluxArray {
             factor,
             factor * star_velocity.x,
             factor * star_velocity.y,
@@ -74,24 +162,26 @@ FluxArray hllc_flux(const Primitive& left_p,
             star_energy,
             factor * p.nu_tilde,
         };
+        return std::all_of(q_star.begin(), q_star.end(), [](Real value) { return std::isfinite(value); });
     };
 
-    const FluxArray q_star_l = star_state(left_p, left_q, s_l, un_l, p_star_l);
-    const FluxArray q_star_r = star_state(right_p, right_q, s_r, un_r, p_star_r);
-
     FluxArray flux {};
-    if (0.0 <= s_l) {
-        flux = f_l;
-    } else if (s_l <= 0.0 && 0.0 <= s_m) {
+    if (s_m >= 0.0) {
+        FluxArray q_star_l {};
+        if (!star_state(left_p, left_q, s_l, un_l, p_star_l, q_star_l)) {
+            return hll_flux(left_p, left_q, right_p, right_q, area_vector, gas, s_l, s_r);
+        }
         for (int m = 0; m < 6; ++m) {
             flux[m] = f_l[m] + s_l * area * (q_star_l[m] - q_l[m]);
         }
-    } else if (s_m <= 0.0 && 0.0 <= s_r) {
+    } else {
+        FluxArray q_star_r {};
+        if (!star_state(right_p, right_q, s_r, un_r, p_star_r, q_star_r)) {
+            return hll_flux(left_p, left_q, right_p, right_q, area_vector, gas, s_l, s_r);
+        }
         for (int m = 0; m < 6; ++m) {
             flux[m] = f_r[m] + s_r * area * (q_star_r[m] - q_r[m]);
         }
-    } else {
-        flux = f_r;
     }
     return flux;
 }

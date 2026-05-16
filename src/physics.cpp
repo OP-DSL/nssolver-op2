@@ -106,6 +106,23 @@ Conservative primitive_to_conservative(const Primitive& primitive, const GasMode
     return c;
 }
 
+void cleanup_conservative(Conservative& conservative) {
+    const Real rho = std::max(std::abs(conservative.rho), 1.0e-12);
+    const Real momentum_floor = 1.0e-7 * rho;
+    if (std::abs(conservative.rhou) <= momentum_floor) {
+        conservative.rhou = 0.0;
+    }
+    if (std::abs(conservative.rhov) <= momentum_floor) {
+        conservative.rhov = 0.0;
+    }
+    if (std::abs(conservative.rhow) <= momentum_floor) {
+        conservative.rhow = 0.0;
+    }
+    if (std::abs(conservative.rhoNu) <= 1.0e-14 * rho) {
+        conservative.rhoNu = 0.0;
+    }
+}
+
 Primitive conservative_to_primitive(const Conservative& conservative, const GasModel& gas) {
     constexpr Real rho_floor = 1.0e-12;
     constexpr Real p_floor = 1.0e-12;
