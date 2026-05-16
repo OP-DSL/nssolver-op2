@@ -157,6 +157,39 @@ bash scripts/run_flatplate_validation.sh
 
 The flat-plate script checks the OP2 residual target and verifies that wall/profile benchmark CSV outputs are produced.
 
+## Numerical Stability Notes
+
+Recent stability work focused on making the OP2 path insensitive to ordinary
+debug versus optimized compiler choices. The `bump` case was the motivating
+regression: `DEBUG=1 make genseq` and an optimized `make genseq` previously
+produced visibly different HDF5 solutions.
+
+The OP2 kernels now use a guarded HLLC flux path:
+
+- zero-area faces return zero flux
+- pure supersonic left/right states return the corresponding physical flux
+- near-singular HLLC denominators fall back to HLL
+- non-finite or out-of-wavefan contact speeds fall back to HLL
+- near-zero contact speeds use HLL to avoid optimization-sensitive branch
+  amplification around symmetric states
+- invalid HLL denominators fall back to Rusanov flux
+
+The RK update also normalizes tiny conserved quantities after each stage:
+
+- momentum components below `1.0e-7 * rho` are set to zero
+- transported turbulence variable values below `1.0e-14 * rho` are set to zero
+
+This cleanup removes roundoff-scale transverse momentum and turbulence traces
+that can otherwise be amplified differently by optimized and debug builds. The
+current regression expectation is that the optimized and debug `genseq` bump
+solutions compare cleanly with:
+
+```bash
+h5diff -p 1e-6 -v debug_bump_solution.h5 opt_bump_solution.h5
+```
+
+The validation targets in `docs/VALIDATION.md` were updated after these changes.
+
 ## HDF5 Mesh Datasets
 
 The OP2 app expects these datasets:
