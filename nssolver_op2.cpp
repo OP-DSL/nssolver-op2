@@ -9,6 +9,7 @@
 
 #include "op_seq.h"
 #include "op_hdf5.h"
+#include <op_profile.h>
 
 #include "op2_config.h"
 #include "op2_kernels.h"
@@ -138,6 +139,8 @@ int main(int argc, char **argv) {
     op_dat grad = op_decl_dat_temp_char(nodes, NGRAD_OP2, "double", sizeof(double), "grad");
 
     op_partition("PARMETIS", "KWAY", edges, edge_to_nodes, NULL);
+
+    op_profile_start("NSSolver OP2");
 
     std::cout << "[phase] initialize\n";
     op_par_loop(initialize_q_kernel, "initialize_q_kernel", nodes,
@@ -402,6 +405,8 @@ int main(int argc, char **argv) {
                 op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                 op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_WRITE));
 
+    op_profile_end();
+
     q->name = strdup("q");
     prim->name = strdup("primitive");
     dt->name = strdup("dt");
@@ -421,6 +426,7 @@ int main(int argc, char **argv) {
     std::cout << "Wrote solution HDF5: " << cfg.output_file << "\n";
     std::cout << "Wrote residual CSV: " << residual_path.string() << "\n";
     op_timing_output();
+    op_profile_output();
     op_exit();
     return 0;
   } catch (const std::exception &ex) {
