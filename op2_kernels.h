@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <math.h>
 
 static constexpr int NVAR_OP2 = 6;
 static constexpr int NPRIM_OP2 = 6;
@@ -46,12 +47,12 @@ inline void primitive_to_conservative_op2(const double *p, double *q) {
 }
 
 inline void cleanup_conservative_op2(double *q) {
-  const double rho = std::max(std::abs(q[0]), 1.0e-12);
+  const double rho = fmax(fabs(q[0]), 1.0e-12);
   const double momentum_floor = 1.0e-7 * rho;
   for (int m = 1; m <= 3; ++m) {
-    if (std::abs(q[m]) <= momentum_floor) q[m] = 0.0;
+    if (fabs(q[m]) <= momentum_floor) q[m] = 0.0;
   }
-  if (std::abs(q[5]) <= 1.0e-14 * rho) q[5] = 0.0;
+  if (fabs(q[5]) <= 1.0e-14 * rho) q[5] = 0.0;
 }
 
 inline void conservative_to_primitive_op2(const double *q, double *p) {
@@ -118,8 +119,8 @@ inline void rusanov_flux_op2(const double *pl, const double *ql, const double *p
   physical_flux_op2(pl, ql, area_vec, f_l);
   physical_flux_op2(pr, qr, area_vec, f_r);
 
-  const double lambda = area * std::max(std::abs(normal_velocity_op2(pl, unit_normal)) + speed_of_sound_op2(pl),
-                                        std::abs(normal_velocity_op2(pr, unit_normal)) + speed_of_sound_op2(pr));
+  const double lambda = area * fmax(fabs(normal_velocity_op2(pl, unit_normal)) + speed_of_sound_op2(pl),
+                                        fabs(normal_velocity_op2(pr, unit_normal)) + speed_of_sound_op2(pr));
   for (int m = 0; m < NVAR_OP2; ++m) {
     flux[m] = 0.5 * (f_l[m] + f_r[m]) - 0.5 * lambda * (qr[m] - ql[m]);
   }
@@ -143,8 +144,8 @@ inline void hll_flux_op2(const double *pl, const double *ql, const double *pr, c
 
   const double area = vec_norm3(area_vec);
   const double denom = s_r - s_l;
-  const double scale = std::max(std::abs(s_l) + std::abs(s_r), 1.0);
-  if (!std::isfinite(denom) || std::abs(denom) <= 1.0e-12 * scale) {
+  const double scale = fmax(fabs(s_l) + fabs(s_r), 1.0);
+  if (!isfinite(denom) || fabs(denom) <= 1.0e-12 * scale) {
     rusanov_flux_op2(pl, ql, pr, qr, area_vec, flux);
     return;
   }
@@ -169,9 +170,6 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
 
   const double s_l = fmin(un_l - a_l, un_r - a_r);
   const double s_r = fmax(un_l + a_l, un_r + a_r);
-  const double numerator = pr[4] - pl[4] + ql[0] * un_l * (s_l - un_l) - qr[0] * un_r * (s_r - un_r);
-  const double denominator = ql[0] * (s_l - un_l) - qr[0] * (s_r - un_r);
-  const double s_m = numerator / denominator;
 
   double f_l[NVAR_OP2];
   double f_r[NVAR_OP2];
@@ -189,18 +187,18 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
 
   const double numerator = pr[4] - pl[4] + ql[0] * un_l * (s_l - un_l) - qr[0] * un_r * (s_r - un_r);
   const double denominator = ql[0] * (s_l - un_l) - qr[0] * (s_r - un_r);
-  const double denominator_scale = std::max(std::abs(ql[0] * (s_l - un_l)) + std::abs(qr[0] * (s_r - un_r)), 1.0);
-  if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-12 * denominator_scale) {
+  const double denominator_scale = fmax(fabs(ql[0] * (s_l - un_l)) + fabs(qr[0] * (s_r - un_r)), 1.0);
+  if (!isfinite(denominator) || fabs(denominator) <= 1.0e-12 * denominator_scale) {
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
   const double s_m = numerator / denominator;
-  if (!std::isfinite(s_m) || s_m <= s_l || s_m >= s_r) {
+  if (!isfinite(s_m) || s_m <= s_l || s_m >= s_r) {
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
-  const double contact_scale = std::max(std::abs(s_l) + std::abs(s_r) + std::abs(s_m), 1.0);
-  if (std::abs(s_m) <= 1.0e-8 * contact_scale) {
+  const double contact_scale = fmax(fabs(s_l) + fabs(s_r) + fabs(s_m), 1.0);
+  if (fabs(s_m) <= 1.0e-8 * contact_scale) {
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
@@ -211,8 +209,8 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
   auto star_state = [&](const double *p, const double *q, double s_k, double un_k, double p_star, double *q_star) {
     const double speed_gap = s_k - s_m;
     const double acoustic_gap = s_k - un_k;
-    const double gap_scale = std::max(std::abs(s_k) + std::abs(s_m) + std::abs(un_k), 1.0);
-    if (std::abs(speed_gap) <= 1.0e-12 * gap_scale || std::abs(acoustic_gap) <= 1.0e-12 * gap_scale) return false;
+    const double gap_scale = fmax(fabs(s_k) + fabs(s_m) + fabs(un_k), 1.0);
+    if (fabs(speed_gap) <= 1.0e-12 * gap_scale || fabs(acoustic_gap) <= 1.0e-12 * gap_scale) return false;
     const double factor = q[0] * acoustic_gap / speed_gap;
     const double tangential[3] = {
         p[1] - un_k * unit_normal[0],
@@ -233,7 +231,7 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
     q_star[4] = star_energy;
     q_star[5] = factor * p[5];
     for (int m = 0; m < NVAR_OP2; ++m) {
-      if (!std::isfinite(q_star[m])) return false;
+      if (!isfinite(q_star[m])) return false;
     }
     return true;
   };
@@ -407,7 +405,7 @@ inline void bface_grad_kernel(const double *normal, const int *num_nodes, const 
                               double *grad1, double *grad2, double *grad3, double *grad4) {
   // Boundary faces contribute a face-averaged primitive value projected along
   // the outward face normal, shared equally across the active incident nodes.
-  const double inv_nodes = 1.0 / std::max(num_nodes[0], 1);
+  const double inv_nodes = 1.0 / fmax(num_nodes[0], 1);
   double face_prim[NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {
     face_prim[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
@@ -487,7 +485,7 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
                                  const double *prim4, double *r1, double *r2, double *r3, double *r4) {
   // Boundary faces use a face-averaged interior state, a type-specific ghost
   // state, and an equal split of the resulting flux back to the face nodes.
-  const double inv_nodes = 1.0 / std::max(num_nodes[0], 1);
+  const double inv_nodes = 1.0 / fmax(num_nodes[0], 1);
   double p_int[NPRIM_OP2] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   for (int m = 0; m < NPRIM_OP2; ++m) {
     p_int[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
@@ -574,7 +572,7 @@ inline void rk_update_kernel(const int *rk_stage, const double *dt, const double
   cleanup_conservative_op2(q);
   double prim[NPRIM_OP2];
   conservative_to_primitive_op2(q, prim);
-  if (!std::isfinite(q[0]) || !std::isfinite(q[4]) || q[0] < op2_rho_floor || prim[4] < op2_p_floor) {
+  if (!isfinite(q[0]) || !isfinite(q[4]) || q[0] < op2_rho_floor || prim[4] < op2_p_floor) {
     for (int m = 0; m < NVAR_OP2; ++m) q[m] = q0[m];
   }
 }
