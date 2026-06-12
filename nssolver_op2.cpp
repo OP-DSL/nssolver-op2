@@ -12,6 +12,7 @@
 
 #include "op2_config.h"
 #include "op2_kernels.h"
+#include <op_profile.h>
 
 double op2_gamma = 1.4;
 double op2_gas_constant = 287.05;
@@ -80,8 +81,8 @@ int main(int argc, char **argv) {
     op2_include_sa = cfg.include_sa;
     for (int i = 0; i < 6; ++i) op2_freestream[i] = cfg.primitive[i];
 
-    std::cout << "[phase] op_init\n";
     op_init(argc, argv, 2);
+    if (op_is_root()) std::cout << "[phase] op_init\n";
 
     // Expose solver configuration constants to OP2 code generation so CUDA
     // backends materialize matching device-side symbols.
@@ -98,18 +99,18 @@ int main(int argc, char **argv) {
     op_decl_const(1, "int", &op2_include_viscous);
     op_decl_const(1, "int", &op2_include_sa);
 
-    std::cout << "[phase] decl sets\n";
+    if (op_is_root()) std::cout << "[phase] decl sets\n";
     op_set nodes = op_decl_set_hdf5_infer_size(cfg.mesh_file.c_str(), "nodes", "node_coordinates");
     op_set edges = op_decl_set_hdf5_infer_size(cfg.mesh_file.c_str(), "edges", "edge-->node");
     op_set bfaces = op_decl_set_hdf5_infer_size(cfg.mesh_file.c_str(), "bfaces", "bface-->node");
     op_set bnodes = op_decl_set_hdf5_infer_size(cfg.mesh_file.c_str(), "bnodes", "bnode-->node");
 
-    std::cout << "[phase] decl maps\n";
+    if (op_is_root()) std::cout << "[phase] decl maps\n";
     op_map edge_to_nodes = op_decl_map_hdf5(edges, nodes, 2, cfg.mesh_file.c_str(), "edge-->node");
     op_map bface_to_nodes = op_decl_map_hdf5(bfaces, nodes, 4, cfg.mesh_file.c_str(), "bface-->node");
     op_map bnode_to_node = op_decl_map_hdf5(bnodes, nodes, 1, cfg.mesh_file.c_str(), "bnode-->node");
 
-    std::cout << "[phase] decl dats\n";
+    if (op_is_root()) std::cout << "[phase] decl dats\n";
     op_dat node_coords = op_decl_dat_hdf5(nodes, 3, "double", cfg.mesh_file.c_str(), "node_coordinates");
     op_dat node_volume = op_decl_dat_hdf5(nodes, 1, "double", cfg.mesh_file.c_str(), "node_volume");
     op_dat node_wall_distance = op_decl_dat_hdf5(nodes, 1, "double", cfg.mesh_file.c_str(), "node_wall_distance");
@@ -129,6 +130,8 @@ int main(int argc, char **argv) {
     (void)bnode_to_node;
     (void)bnode_normal;
 
+    op_partition("PARMETIS", "KWAY", edges, edge_to_nodes, NULL);
+
     op_dat q = op_decl_dat_temp_char(nodes, NVAR_OP2, "double", sizeof(double), "q");
     op_dat q0 = op_decl_dat_temp_char(nodes, NVAR_OP2, "double", sizeof(double), "q0");
     op_dat prim = op_decl_dat_temp_char(nodes, NPRIM_OP2, "double", sizeof(double), "primitive");
@@ -137,9 +140,8 @@ int main(int argc, char **argv) {
     op_dat dt = op_decl_dat_temp_char(nodes, 1, "double", sizeof(double), "dt");
     op_dat grad = op_decl_dat_temp_char(nodes, NGRAD_OP2, "double", sizeof(double), "grad");
 
-    op_partition("PARMETIS", "KWAY", edges, edge_to_nodes, NULL);
 
-    std::cout << "[phase] initialize\n";
+    if (op_is_root()) std::cout << "[phase] initialize\n";
     op_par_loop(initialize_q_kernel, "initialize_q_kernel", nodes,
                 op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
 
@@ -154,6 +156,7 @@ int main(int argc, char **argv) {
     double wall_t1, wall_t2, cpu;
     op_timers(&cpu, &wall_t1);
 
+    op_profile_start("nssolver_op2");
     for (int iter = 0; iter < cfg.iterations; ++iter) {
       // Keep boundary nodes in a physically admissible state before building any
       // stage data. For viscous runs this imposes no-slip or slip constraints on
@@ -387,20 +390,22 @@ int main(int argc, char **argv) {
       const bool should_print = (iter == 0 || iter + 1 == cfg.iterations ||
                                  ((iter + 1) % std::max(cfg.progress_interval, 1) == 0));
       if (should_print) {
-        std::cout << "[progress] iter " << (iter + 1) << "/" << cfg.iterations
+        if (op_is_root()) std::cout << "[progress] iter " << (iter + 1) << "/" << cfg.iterations
                   << " | L2(rho)=" << norms.l2_rho
                   << " | L2/L2_0=" << (initial_l2_rho > 0.0 ? norms.l2_rho / initial_l2_rho : 1.0)
                   << " | Linf(rho)=" << norms.linf_rho << "\n";
       }
     }
 
-    op_timers(&cpu, &wall_t2);
-    double walltime = wall_t2 - wall_t1;
-    op_printf("Max total runtime = %f\n", walltime);
 
     op_par_loop(q_to_primitive_kernel, "q_to_primitive_kernel", nodes,
                 op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                 op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_WRITE));
+
+    op_profile_end();
+    op_timers(&cpu, &wall_t2);
+    double walltime = wall_t2 - wall_t1;
+    op_printf("Max total runtime = %f\n", walltime);
 
     q->name = strdup("q");
     prim->name = strdup("primitive");
@@ -410,7 +415,7 @@ int main(int argc, char **argv) {
       std::filesystem::create_directories(output_path.parent_path());
     }
     std::filesystem::remove(output_path);
-    std::cout << "[phase] write hdf5\n";
+    if (op_is_root()) std::cout << "[phase] write hdf5\n";
     op_fetch_data_hdf5_file(q, cfg.output_file.c_str());
     op_fetch_data_hdf5_file(prim, cfg.output_file.c_str());
     op_fetch_data_hdf5_file(dt, cfg.output_file.c_str());
@@ -418,9 +423,10 @@ int main(int argc, char **argv) {
     residual_path.replace_extension(".residual.csv");
     write_residual_history_csv_op2(residual_path.string(), history_l2_rho, history_l2_rhoE, history_linf_rho);
 
-    std::cout << "Wrote solution HDF5: " << cfg.output_file << "\n";
-    std::cout << "Wrote residual CSV: " << residual_path.string() << "\n";
+    if (op_is_root()) std::cout << "Wrote solution HDF5: " << cfg.output_file << "\n";
+    if (op_is_root()) std::cout << "Wrote residual CSV: " << residual_path.string() << "\n";
     op_timing_output();
+    op_profile_output();
     op_exit();
     return 0;
   } catch (const std::exception &ex) {
