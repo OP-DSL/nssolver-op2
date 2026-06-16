@@ -405,7 +405,7 @@ inline void bface_grad_kernel(const double *normal, const int *num_nodes, const 
                               double *grad1, double *grad2, double *grad3, double *grad4) {
   // Boundary faces contribute a face-averaged primitive value projected along
   // the outward face normal, shared equally across the active incident nodes.
-  const double inv_nodes = 1.0 / fmax(num_nodes[0], 1);
+  const double inv_nodes = 1.0 / num_nodes[0] > 1 ? num_nodes[0] : 1;
   double face_prim[NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {
     face_prim[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
@@ -485,7 +485,7 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
                                  const double *prim4, double *r1, double *r2, double *r3, double *r4) {
   // Boundary faces use a face-averaged interior state, a type-specific ghost
   // state, and an equal split of the resulting flux back to the face nodes.
-  const double inv_nodes = 1.0 / fmax(num_nodes[0], 1);
+  const double inv_nodes = 1.0 / num_nodes[0] > 1 ? num_nodes[0] : 1;
   double p_int[NPRIM_OP2] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   for (int m = 0; m < NPRIM_OP2; ++m) {
     p_int[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
