@@ -1,7 +1,7 @@
 #pragma once
 
-#include <algorithm>
 #include <cmath>
+#include <math.h>
 
 static constexpr int NVAR_OP2 = 6;
 static constexpr int NPRIM_OP2 = 6;
@@ -47,29 +47,29 @@ inline void primitive_to_conservative_op2(const double *p, double *q) {
 }
 
 inline void cleanup_conservative_op2(double *q) {
-  const double rho = std::max(std::abs(q[0]), 1.0e-12);
+  const double rho = fmax(fabs(q[0]), 1.0e-12);
   const double momentum_floor = 1.0e-7 * rho;
   for (int m = 1; m <= 3; ++m) {
-    if (std::abs(q[m]) <= momentum_floor) q[m] = 0.0;
+    if (fabs(q[m]) <= momentum_floor) q[m] = 0.0;
   }
-  if (std::abs(q[5]) <= 1.0e-14 * rho) q[5] = 0.0;
+  if (fabs(q[5]) <= 1.0e-14 * rho) q[5] = 0.0;
 }
 
 inline void conservative_to_primitive_op2(const double *q, double *p) {
-  const double rho = std::max(q[0], 1.0e-12);
+  const double rho = fmax(q[0], 1.0e-12);
   p[0] = rho;
   p[1] = q[1] / rho;
   p[2] = q[2] / rho;
   p[3] = q[3] / rho;
   const double kinetic = 0.5 * (p[1] * p[1] + p[2] * p[2] + p[3] * p[3]);
   const double specific_energy = q[4] / rho;
-  p[4] = std::max((op2_gamma - 1.0) * rho * (specific_energy - kinetic), 1.0e-12);
+  p[4] = fmax((op2_gamma - 1.0) * rho * (specific_energy - kinetic), 1.0e-12);
   p[5] = q[5] / rho;
 }
 
-inline double speed_of_sound_op2(const double *p) { return std::sqrt(op2_gamma * p[4] / p[0]); }
+inline double speed_of_sound_op2(const double *p) { return sqrt(op2_gamma * p[4] / p[0]); }
 
-inline double vec_norm3(const double *v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+inline double vec_norm3(const double *v) { return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
 
 inline double normal_velocity_op2(const double *p, const double *unit_normal) {
   return p[1] * unit_normal[0] + p[2] * unit_normal[1] + p[3] * unit_normal[2];
@@ -77,7 +77,7 @@ inline double normal_velocity_op2(const double *p, const double *unit_normal) {
 
 inline double dynamic_viscosity_op2(double temperature) {
   const double ratio = temperature / op2_t_ref;
-  return op2_mu_ref * std::pow(ratio, 1.5) * (op2_t_ref + op2_sutherland) / (temperature + op2_sutherland);
+  return op2_mu_ref * pow(ratio, 1.5) * (op2_t_ref + op2_sutherland) / (temperature + op2_sutherland);
 }
 
 inline double thermal_conductivity_op2(double temperature) {
@@ -87,7 +87,7 @@ inline double thermal_conductivity_op2(double temperature) {
 inline double eddy_viscosity_op2(const double *p) {
   const double temperature = p[4] / (p[0] * op2_gas_constant);
   const double nu = dynamic_viscosity_op2(temperature) / p[0];
-  const double nu_tilde = std::max(p[5], 0.0);
+  const double nu_tilde = fmax(p[5], 0.0);
   if (nu <= 0.0 || nu_tilde <= 0.0) return 0.0;
   constexpr double cv1 = 7.1;
   const double chi = nu_tilde / nu;
@@ -119,8 +119,8 @@ inline void rusanov_flux_op2(const double *pl, const double *ql, const double *p
   physical_flux_op2(pl, ql, area_vec, f_l);
   physical_flux_op2(pr, qr, area_vec, f_r);
 
-  const double lambda = area * std::max(std::abs(normal_velocity_op2(pl, unit_normal)) + speed_of_sound_op2(pl),
-                                        std::abs(normal_velocity_op2(pr, unit_normal)) + speed_of_sound_op2(pr));
+  const double lambda = area * fmax(fabs(normal_velocity_op2(pl, unit_normal)) + speed_of_sound_op2(pl),
+                                        fabs(normal_velocity_op2(pr, unit_normal)) + speed_of_sound_op2(pr));
   for (int m = 0; m < NVAR_OP2; ++m) {
     flux[m] = 0.5 * (f_l[m] + f_r[m]) - 0.5 * lambda * (qr[m] - ql[m]);
   }
@@ -144,8 +144,8 @@ inline void hll_flux_op2(const double *pl, const double *ql, const double *pr, c
 
   const double area = vec_norm3(area_vec);
   const double denom = s_r - s_l;
-  const double scale = std::max(std::abs(s_l) + std::abs(s_r), 1.0);
-  if (!std::isfinite(denom) || std::abs(denom) <= 1.0e-12 * scale) {
+  const double scale = fmax(fabs(s_l) + fabs(s_r), 1.0);
+  if (!isfinite(denom) || fabs(denom) <= 1.0e-12 * scale) {
     rusanov_flux_op2(pl, ql, pr, qr, area_vec, flux);
     return;
   }
@@ -168,8 +168,8 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
   const double a_l = speed_of_sound_op2(pl);
   const double a_r = speed_of_sound_op2(pr);
 
-  const double s_l = std::min(un_l - a_l, un_r - a_r);
-  const double s_r = std::max(un_l + a_l, un_r + a_r);
+  const double s_l = fmin(un_l - a_l, un_r - a_r);
+  const double s_r = fmax(un_l + a_l, un_r + a_r);
 
   double f_l[NVAR_OP2];
   double f_r[NVAR_OP2];
@@ -187,18 +187,18 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
 
   const double numerator = pr[4] - pl[4] + ql[0] * un_l * (s_l - un_l) - qr[0] * un_r * (s_r - un_r);
   const double denominator = ql[0] * (s_l - un_l) - qr[0] * (s_r - un_r);
-  const double denominator_scale = std::max(std::abs(ql[0] * (s_l - un_l)) + std::abs(qr[0] * (s_r - un_r)), 1.0);
-  if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-12 * denominator_scale) {
+  const double denominator_scale = fmax(fabs(ql[0] * (s_l - un_l)) + fabs(qr[0] * (s_r - un_r)), 1.0);
+  if (!isfinite(denominator) || fabs(denominator) <= 1.0e-12 * denominator_scale) {
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
   const double s_m = numerator / denominator;
-  if (!std::isfinite(s_m) || s_m <= s_l || s_m >= s_r) {
+  if (!isfinite(s_m) || s_m <= s_l || s_m >= s_r) {
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
-  const double contact_scale = std::max(std::abs(s_l) + std::abs(s_r) + std::abs(s_m), 1.0);
-  if (std::abs(s_m) <= 1.0e-8 * contact_scale) {
+  const double contact_scale = fmax(fabs(s_l) + fabs(s_r) + fabs(s_m), 1.0);
+  if (fabs(s_m) <= 1.0e-8 * contact_scale) {
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
@@ -209,8 +209,8 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
   auto star_state = [&](const double *p, const double *q, double s_k, double un_k, double p_star, double *q_star) {
     const double speed_gap = s_k - s_m;
     const double acoustic_gap = s_k - un_k;
-    const double gap_scale = std::max(std::abs(s_k) + std::abs(s_m) + std::abs(un_k), 1.0);
-    if (std::abs(speed_gap) <= 1.0e-12 * gap_scale || std::abs(acoustic_gap) <= 1.0e-12 * gap_scale) return false;
+    const double gap_scale = fmax(fabs(s_k) + fabs(s_m) + fabs(un_k), 1.0);
+    if (fabs(speed_gap) <= 1.0e-12 * gap_scale || fabs(acoustic_gap) <= 1.0e-12 * gap_scale) return false;
     const double factor = q[0] * acoustic_gap / speed_gap;
     const double tangential[3] = {
         p[1] - un_k * unit_normal[0],
@@ -231,7 +231,7 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
     q_star[4] = star_energy;
     q_star[5] = factor * p[5];
     for (int m = 0; m < NVAR_OP2; ++m) {
-      if (!std::isfinite(q_star[m])) return false;
+      if (!isfinite(q_star[m])) return false;
     }
     return true;
   };
@@ -255,7 +255,7 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
 
 inline void thin_layer_viscous_flux_op2(const double *pl, const double *pr, const double *delta_r, const double *area_vector,
                                         double *flux) {
-  const double distance = std::max(vec_norm3(delta_r), 1.0e-14);
+  const double distance = fmax(vec_norm3(delta_r), 1.0e-14);
   const double area = vec_norm3(area_vector);
   const double t_l = pl[4] / (pl[0] * op2_gas_constant);
   const double t_r = pr[4] / (pr[0] * op2_gas_constant);
@@ -284,9 +284,9 @@ inline void thin_layer_viscous_flux_op2(const double *pl, const double *pr, cons
 }
 
 inline double scalar_edge_limiter_op2(double projected_delta, double edge_delta) {
-  if (std::abs(projected_delta) < 1.0e-14) return 1.0;
+  if (fabs(projected_delta) < 1.0e-14) return 1.0;
   if (projected_delta * edge_delta <= 0.0) return 0.0;
-  return std::clamp(edge_delta / projected_delta, 0.0, 1.0);
+  return fmax(0.0, fmin(1.0, edge_delta / projected_delta));
 }
 
 inline void reconstruct_primitive_op2(const double *prim, const double *grad, const double *delta_r, double limiter_scale,
@@ -295,8 +295,8 @@ inline void reconstruct_primitive_op2(const double *prim, const double *grad, co
     const int base = 3 * m;
     out[m] = prim[m] + limiter_scale * (grad[base + 0] * delta_r[0] + grad[base + 1] * delta_r[1] + grad[base + 2] * delta_r[2]);
   }
-  out[0] = std::max(out[0], 1.0e-12);
-  out[4] = std::max(out[4], 1.0e-12);
+  out[0] = fmax(out[0], 1.0e-12);
+  out[4] = fmax(out[4], 1.0e-12);
 }
 
 inline void make_boundary_ghost_state_op2(const double *interior, const double *unit_normal, int boundary_type, double *ghost) {
@@ -368,8 +368,8 @@ inline void edge_spectral_kernel(const double *prim_l, const double *prim_r, con
                                  const double *vol_r, double *spec_l, double *spec_r) {
   const double area = vec_norm3(edge_weight);
   const double unit_normal[3] = {edge_weight[0] / area, edge_weight[1] / area, edge_weight[2] / area};
-  const double un_l = std::abs(normal_velocity_op2(prim_l, unit_normal));
-  const double un_r = std::abs(normal_velocity_op2(prim_r, unit_normal));
+  const double un_l = fabs(normal_velocity_op2(prim_l, unit_normal));
+  const double un_r = fabs(normal_velocity_op2(prim_r, unit_normal));
   spec_l[0] += area * (un_l + speed_of_sound_op2(prim_l));
   spec_r[0] += area * (un_r + speed_of_sound_op2(prim_r));
   if (op2_include_viscous) {
@@ -377,8 +377,8 @@ inline void edge_spectral_kernel(const double *prim_l, const double *prim_r, con
     const double t_r = prim_r[4] / (prim_r[0] * op2_gas_constant);
     const double mu_l = dynamic_viscosity_op2(t_l);
     const double mu_r = dynamic_viscosity_op2(t_r);
-    spec_l[0] += 2.0 * mu_l * area * area / std::max(prim_l[0] * vol_l[0], 1.0e-14);
-    spec_r[0] += 2.0 * mu_r * area * area / std::max(prim_r[0] * vol_r[0], 1.0e-14);
+    spec_l[0] += 2.0 * mu_l * area * area / fmax(prim_l[0] * vol_l[0], 1.0e-14);
+    spec_r[0] += 2.0 * mu_r * area * area / fmax(prim_r[0] * vol_r[0], 1.0e-14);
   }
 }
 
@@ -405,7 +405,7 @@ inline void bface_grad_kernel(const double *normal, const int *num_nodes, const 
                               double *grad1, double *grad2, double *grad3, double *grad4) {
   // Boundary faces contribute a face-averaged primitive value projected along
   // the outward face normal, shared equally across the active incident nodes.
-  const double inv_nodes = 1.0 / std::max(num_nodes[0], 1);
+  const double inv_nodes = 1.0 / num_nodes[0] > 1 ? num_nodes[0] : 1;
   double face_prim[NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {
     face_prim[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
@@ -423,7 +423,7 @@ inline void bface_grad_kernel(const double *normal, const int *num_nodes, const 
 }
 
 inline void normalize_grad_kernel(const double *volume, double *grad) {
-  const double inv_vol = 1.0 / std::max(volume[0], 1.0e-14);
+  const double inv_vol = 1.0 / fmax(volume[0], 1.0e-14);
   for (int i = 0; i < NGRAD_OP2; ++i) grad[i] *= inv_vol;
 }
 
@@ -435,7 +435,7 @@ inline double edge_limiter_scale_op2(const double *prim_center, const double *pr
   for (int m = 0; m < NPRIM_OP2; ++m) {
     const int base = 3 * m;
     const double projected = grad[base + 0] * delta_r[0] + grad[base + 1] * delta_r[1] + grad[base + 2] * delta_r[2];
-    phi = std::min(phi, scalar_edge_limiter_op2(projected, prim_neighbor[m] - prim_center[m]));
+    phi = fmin(phi, scalar_edge_limiter_op2(projected, prim_neighbor[m] - prim_center[m]));
   }
   return phi;
 }
@@ -485,13 +485,13 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
                                  const double *prim4, double *r1, double *r2, double *r3, double *r4) {
   // Boundary faces use a face-averaged interior state, a type-specific ghost
   // state, and an equal split of the resulting flux back to the face nodes.
-  const double inv_nodes = 1.0 / std::max(num_nodes[0], 1);
+  const double inv_nodes = 1.0 / num_nodes[0] > 1 ? num_nodes[0] : 1;
   double p_int[NPRIM_OP2] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   for (int m = 0; m < NPRIM_OP2; ++m) {
     p_int[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
   }
 
-  const double amag = std::max(area[0], 1.0e-14);
+  const double amag = fmax(area[0], 1.0e-14);
   const double unit_normal[3] = {normal[0] / amag, normal[1] / amag, normal[2] / amag};
   double p_ghost[NPRIM_OP2];
   make_boundary_ghost_state_op2(p_int, unit_normal, btype[0], p_ghost);
@@ -510,7 +510,7 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
     wall_state[2] = 0.0;
     wall_state[3] = 0.0;
     const double volume_sum = vol1[0] + vol2[0] + vol3[0] + (num_nodes[0] == 4 ? vol4[0] : 0.0);
-    const double distance = std::max(volume_sum / (static_cast<double>(num_nodes[0]) * amag), 1.0e-12);
+    const double distance = fmax(volume_sum / ((double)(num_nodes[0]) * amag), 1.0e-12);
     const double delta_r[3] = {distance * unit_normal[0], distance * unit_normal[1], distance * unit_normal[2]};
     double viscous[NVAR_OP2];
     thin_layer_viscous_flux_op2(p_int, wall_state, delta_r, normal, viscous);
@@ -543,22 +543,22 @@ inline void sa_source_kernel(const double *prim, const double *grad, const doubl
 
   const double temperature = prim[4] / (prim[0] * op2_gas_constant);
   const double nu = dynamic_viscosity_op2(temperature) / prim[0];
-  const double nu_tilde = std::max(prim[5], 0.0);
-  const double d = std::max(wall_dist[0], 1.0e-8);
+  const double nu_tilde = fmax(prim[5], 0.0);
+  const double d = fmax(wall_dist[0], 1.0e-8);
   if (nu_tilde <= 0.0) return;
 
   const double wx = grad[3 * IDX_W + 1] - grad[3 * IDX_V + 2];
   const double wy = grad[3 * IDX_U + 2] - grad[3 * IDX_W + 0];
   const double wz = grad[3 * IDX_V + 0] - grad[3 * IDX_U + 1];
-  const double omega = std::sqrt(wx * wx + wy * wy + wz * wz);
-  const double chi = nu_tilde / std::max(nu, 1.0e-14);
+  const double omega = sqrt(wx * wx + wy * wy + wz * wz);
+  const double chi = nu_tilde / fmax(nu, 1.0e-14);
   const double chi3 = chi * chi * chi;
   const double fv1 = chi3 / (chi3 + cv1 * cv1 * cv1);
   const double fv2 = 1.0 - chi / (1.0 + chi * fv1);
-  const double s_tilde = std::max(omega + nu_tilde * fv2 / (kappa * kappa * d * d), 0.3 * omega + 1.0e-14);
-  const double r = std::min(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
-  const double g = r + cw2 * (std::pow(r, 6) - r);
-  const double fw = g * std::pow((1.0 + std::pow(cw3, 6)) / (std::pow(g, 6) + std::pow(cw3, 6)), 1.0 / 6.0);
+  const double s_tilde = fmax(omega + nu_tilde * fv2 / (kappa * kappa * d * d), 0.3 * omega + 1.0e-14);
+  const double r = fmin(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
+  const double g = r + cw2 * (pow(r, 6) - r);
+  const double fw = g * pow((1.0 + pow(cw3, 6)) / (pow(g, 6) + pow(cw3, 6)), 1.0 / 6.0);
   const double production = cb1 * s_tilde * nu_tilde;
   const double destruction = cw1 * fw * nu_tilde * nu_tilde / (d * d);
   res[5] -= volume[0] * prim[0] * (production - destruction);
@@ -572,7 +572,7 @@ inline void rk_update_kernel(const int *rk_stage, const double *dt, const double
   cleanup_conservative_op2(q);
   double prim[NPRIM_OP2];
   conservative_to_primitive_op2(q, prim);
-  if (!std::isfinite(q[0]) || !std::isfinite(q[4]) || q[0] < op2_rho_floor || prim[4] < op2_p_floor) {
+  if (!isfinite(q[0]) || !isfinite(q[4]) || q[0] < op2_rho_floor || prim[4] < op2_p_floor) {
     for (int m = 0; m < NVAR_OP2; ++m) q[m] = q0[m];
   }
 }
@@ -580,5 +580,5 @@ inline void rk_update_kernel(const int *rk_stage, const double *dt, const double
 inline void residual_norm_kernel(const double *res, double *l2rho, double *l2rhoE, double *linf_rho) {
   l2rho[0] += res[0] * res[0];
   l2rhoE[0] += res[4] * res[4];
-  linf_rho[0] = std::max(linf_rho[0], std::abs(res[0]));
+  linf_rho[0] = fmax(linf_rho[0], fabs(res[0]));
 }
