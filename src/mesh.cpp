@@ -227,33 +227,73 @@ Mesh build_structured_mesh(Index nx,
         }
     }
 
+    // The edges, each node's to its +i, +j and +k neighbours, with the area
+    // vectors of the median dual: in each cell, each edge's dual face is the
+    // quad (edge midpoint, centroid of one adjacent face, cell centroid,
+    // centroid of the other), so every control volume closes.
+    std::vector<Index> edge_from[3];
+    for (auto& e : edge_from) e.assign(node_count, -1);
     for (Index k = 0; k < nz; ++k) {
         for (Index j = 0; j < ny; ++j) {
             for (Index i = 0; i < nx; ++i) {
                 const Index left = node_id(i, j, k, nx, ny);
                 if (i + 1 < nx) {
-                    const Index right = node_id(i + 1, j, k, nx, ny);
-                    const Real weight = 0.25 * static_cast<Real>(adjacent_cell_count_for_x_edge(j, k, ny, nz));
-                    const Vec3 span_y = mapping(i, std::min(j + 1, ny - 1), k) - mapping(i, std::max(j - 1, 0), k);
-                    const Vec3 span_z = mapping(i, j, std::min(k + 1, nz - 1)) - mapping(i, j, std::max(k - 1, 0));
-                    add_edge(mesh, left, right, weight * 0.25 * cross(span_y, span_z));
+                    edge_from[0][left] = static_cast<Index>(mesh.edges.node_L.size());
+                    add_edge(mesh, left, node_id(i + 1, j, k, nx, ny), {});
                 }
                 if (j + 1 < ny) {
-                    const Index right = node_id(i, j + 1, k, nx, ny);
-                    const Real weight = 0.25 * static_cast<Real>(adjacent_cell_count_for_y_edge(i, k, nx, nz));
-                    const Vec3 span_z = mapping(i, j, std::min(k + 1, nz - 1)) - mapping(i, j, std::max(k - 1, 0));
-                    const Vec3 span_x = mapping(std::min(i + 1, nx - 1), j, k) - mapping(std::max(i - 1, 0), j, k);
-                    add_edge(mesh, left, right, weight * 0.25 * cross(span_z, span_x));
+                    edge_from[1][left] = static_cast<Index>(mesh.edges.node_L.size());
+                    add_edge(mesh, left, node_id(i, j + 1, k, nx, ny), {});
                 }
                 if (k + 1 < nz) {
-                    const Index right = node_id(i, j, k + 1, nx, ny);
-                    const Real weight = 0.25 * static_cast<Real>(adjacent_cell_count_for_z_edge(i, j, nx, ny));
-                    const Vec3 span_x = mapping(std::min(i + 1, nx - 1), j, k) - mapping(std::max(i - 1, 0), j, k);
-                    const Vec3 span_y = mapping(i, std::min(j + 1, ny - 1), k) - mapping(i, std::max(j - 1, 0), k);
-                    add_edge(mesh, left, right, weight * 0.25 * cross(span_x, span_y));
+                    edge_from[2][left] = static_cast<Index>(mesh.edges.node_L.size());
+                    add_edge(mesh, left, node_id(i, j, k + 1, nx, ny), {});
                 }
             }
         }
+    }
+
+    // A hex's corners as (i, j, k) offsets, its faces, and its edges: the
+    // corner they start from, their direction and their two faces.
+    constexpr int corner[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                                  {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+    constexpr int face[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                                {3, 2, 6, 7}, {0, 3, 7, 4}, {1, 2, 6, 5}};
+    constexpr int cell_edge[12][4] = {{0, 0, 0, 2}, {3, 0, 0, 3}, {4, 0, 1, 2}, {7, 0, 1, 3},
+                                      {0, 1, 0, 4}, {1, 1, 0, 5}, {4, 1, 1, 4}, {5, 1, 1, 5},
+                                      {0, 2, 2, 4}, {1, 2, 2, 5}, {3, 2, 3, 4}, {2, 2, 3, 5}};
+    for (Index k = 0; k < nz - 1; ++k) {
+        for (Index j = 0; j < ny - 1; ++j) {
+            for (Index i = 0; i < nx - 1; ++i) {
+                std::array<Vec3, 8> p {};
+                Vec3 centroid_cell {};
+                for (int n = 0; n < 8; ++n) {
+                    p[n] = mapping(i + corner[n][0], j + corner[n][1], k + corner[n][2]);
+                    centroid_cell = centroid_cell + 0.125 * p[n];
+                }
+                std::array<Vec3, 6> centroid_face {};
+                for (int f = 0; f < 6; ++f) {
+                    for (int n = 0; n < 4; ++n) centroid_face[f] = centroid_face[f] + 0.25 * p[face[f][n]];
+                }
+                for (const auto& e : cell_edge) {
+                    const int a = e[0];
+                    const int dir = e[1];
+                    const int b_offset[3] = {corner[a][0] + (dir == 0), corner[a][1] + (dir == 1), corner[a][2] + (dir == 2)};
+                    const Vec3 pa = p[a];
+                    const Vec3 pb = mapping(i + b_offset[0], j + b_offset[1], k + b_offset[2]);
+                    const Vec3 midpoint = 0.5 * (pa + pb);
+                    Vec3 dual = quad_area_vector(midpoint, centroid_face[e[2]], centroid_cell, centroid_face[e[3]]);
+                    if (dot(dual, pb - pa) < 0.0) dual = -1.0 * dual;
+                    const Index edge = edge_from[dir][node_id(i + corner[a][0], j + corner[a][1], k + corner[a][2], nx, ny)];
+                    mesh.edges.nx[edge] += dual.x;
+                    mesh.edges.ny[edge] += dual.y;
+                    mesh.edges.nz[edge] += dual.z;
+                }
+            }
+        }
+    }
+    for (std::size_t e = 0; e < mesh.edges.node_L.size(); ++e) {
+        mesh.edges.area[e] = norm(Vec3 {mesh.edges.nx[e], mesh.edges.ny[e], mesh.edges.nz[e]});
     }
 
     for (Index j = 0; j < ny - 1; ++j) {
@@ -685,6 +725,32 @@ Real total_nodal_volume(const Mesh& mesh) {
         total += v;
     }
     return total;
+}
+
+std::vector<Real> boundary_node_normals(const Mesh& mesh) {
+    const auto& faces = mesh.boundary_faces;
+    std::vector<Real> shares(12 * faces.count, 0.0);
+    for (std::size_t f = 0; f < faces.count; ++f) {
+        const auto nodes = boundary_face_nodes(faces, f);
+        const std::size_t count = boundary_face_num_nodes(faces, f);
+        std::array<Vec3, 4> p {};
+        Vec3 centroid {};
+        for (std::size_t n = 0; n < count; ++n) {
+            p[n] = {mesh.nodes.x[nodes[n]], mesh.nodes.y[nodes[n]], mesh.nodes.z[nodes[n]]};
+            centroid = centroid + (1.0 / static_cast<Real>(count)) * p[n];
+        }
+        const Vec3 normal {faces.nx[f], faces.ny[f], faces.nz[f]};
+        for (std::size_t n = 0; n < count; ++n) {
+            const Vec3 next = 0.5 * (p[n] + p[(n + 1) % count]);
+            const Vec3 prev = 0.5 * (p[n] + p[(n + count - 1) % count]);
+            Vec3 share = quad_area_vector(p[n], next, centroid, prev);
+            if (dot(share, normal) < 0.0) share = -1.0 * share;
+            shares[12 * f + 3 * n + 0] = share.x;
+            shares[12 * f + 3 * n + 1] = share.y;
+            shares[12 * f + 3 * n + 2] = share.z;
+        }
+    }
+    return shares;
 }
 
 }  // namespace nssolver

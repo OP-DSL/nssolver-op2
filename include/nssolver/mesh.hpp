@@ -175,5 +175,9 @@ Mesh make_bump_3d_mesh(const Bump3DSpec& spec);
 Mesh make_axisymmetric_body_mesh(const AxisymmetricBodySpec& spec);
 Mesh make_naca_finite_wing_mesh(const NacaWingSpec& spec);
 Real total_nodal_volume(const Mesh& mesh);
+// Each boundary face's nodes' shares of it, 4 area vectors per face (unused
+// ones zero): the median sub-face (node, edge midpoints, face centroid) that
+// closes the node's control volume.
+std::vector<Real> boundary_node_normals(const Mesh& mesh);
 
 }  // namespace nssolver
