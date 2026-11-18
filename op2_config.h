@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <initializer_list>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -25,7 +26,106 @@ struct SolverConfig {
   double rho_floor = 1.0e-4;
   double p_floor = 100.0;
   double primitive[6] = {1.225, 120.0, 0.0, 0.0, 101325.0, 0.0};
+  // Outlet ghost state under backflow: extrapolate (the interior state with
+  // the free-stream pressure, as for outflow) or freestream.
+  std::string outlet_backflow = "extrapolate";
+
+  // Time marching: rk4, or implicit pseudo-time steps through OP2's solver
+  // layer at a CFL from implicit_cfl, times implicit_cfl_growth each
+  // iteration, up to implicit_cfl_max; the Jacobian reassembled every
+  // jacobian_interval iterations.
+  std::string time_scheme = "rk4";
+  double implicit_cfl = 10.0;
+  double implicit_cfl_max = 0.0;    // implicit_cfl when 0
+  double implicit_cfl_growth = 1.0;
+  double implicit_relax = 1.0;
+  int jacobian_interval = 1;
+
+  // The linear solves, as the OP2 implicit proxy (apps/c/implicit) takes them:
+  // the solver layer's JSON (solve_config; OP_SOLVE_CONFIG over it), the
+  // library's preconditioner or a par-loop one (pc: lib, bjacobi, neumann with
+  // terms steps), the library's preconditioner from A or its components'
+  // blocks alone (pmat: A, decoupled), and the operator assembled or by
+  // differences of the residual (op: assembled, matfree).
+  std::string solve_config;
+  std::string pc = "lib";
+  int terms = 2;
+  std::string pmat = "A";
+  std::string op = "assembled";
+
+  // Run: partitioner (kway, random, inertial), renumbering each rank's mesh
+  // (reorder), OP2's diagnostics level and timing output, and a check that
+  // fails the run unless L2(rho) falls by the factor check.
+  std::string partition = "kway";
+  int reorder = 0;
+  int diags = 2;
+  int timing = 1;
+  double check = 0.0;
 };
+
+// Sets the member a config key (or command-line option) names; false for a
+// key no member has.
+inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const std::string &value) {
+  if (key == "mesh_file") cfg.mesh_file = value;
+  else if (key == "output_file") cfg.output_file = value;
+  else if (key == "init_mode") cfg.init_mode = value;
+  else if (key == "hydra_inflow_xml") cfg.hydra_inflow_xml = value;
+  else if (key == "hydra_outflow_xml") cfg.hydra_outflow_xml = value;
+  else if (key == "hydra_benchmark_mach") cfg.hydra_benchmark_mach = std::stod(value);
+  else if (key == "iterations") cfg.iterations = std::stoi(value);
+  else if (key == "cfl") cfg.cfl = std::stod(value);
+  else if (key == "progress_interval") cfg.progress_interval = std::stoi(value);
+  else if (key == "second_order") cfg.second_order = std::stoi(value);
+  else if (key == "include_viscous") cfg.include_viscous = std::stoi(value);
+  else if (key == "include_sa") cfg.include_sa = std::stoi(value);
+  else if (key == "gamma") cfg.gamma = std::stod(value);
+  else if (key == "gas_constant") cfg.gas_constant = std::stod(value);
+  else if (key == "rho_floor") cfg.rho_floor = std::stod(value);
+  else if (key == "p_floor") cfg.p_floor = std::stod(value);
+  else if (key == "rho") cfg.primitive[0] = std::stod(value);
+  else if (key == "u") cfg.primitive[1] = std::stod(value);
+  else if (key == "v") cfg.primitive[2] = std::stod(value);
+  else if (key == "w") cfg.primitive[3] = std::stod(value);
+  else if (key == "p") cfg.primitive[4] = std::stod(value);
+  else if (key == "nu_tilde") cfg.primitive[5] = std::stod(value);
+  else if (key == "outlet_backflow") cfg.outlet_backflow = value;
+  else if (key == "time_scheme") cfg.time_scheme = value;
+  else if (key == "implicit_cfl") cfg.implicit_cfl = std::stod(value);
+  else if (key == "implicit_cfl_max") cfg.implicit_cfl_max = std::stod(value);
+  else if (key == "implicit_cfl_growth") cfg.implicit_cfl_growth = std::stod(value);
+  else if (key == "implicit_relax") cfg.implicit_relax = std::stod(value);
+  else if (key == "jacobian_interval") cfg.jacobian_interval = std::stoi(value);
+  else if (key == "solve_config") cfg.solve_config = value;
+  else if (key == "pc") cfg.pc = value;
+  else if (key == "terms") cfg.terms = std::stoi(value);
+  else if (key == "pmat") cfg.pmat = value;
+  else if (key == "op") cfg.op = value;
+  else if (key == "partition") cfg.partition = value;
+  else if (key == "reorder") cfg.reorder = std::stoi(value);
+  else if (key == "diags") cfg.diags = std::stoi(value);
+  else if (key == "timing") cfg.timing = std::stoi(value);
+  else if (key == "check") cfg.check = std::stod(value);
+  else return false;
+  return true;
+}
+
+inline void validate_config(const SolverConfig &cfg) {
+  if (cfg.mesh_file.empty()) throw std::runtime_error("config missing mesh_file");
+  if (cfg.output_file.empty()) throw std::runtime_error("config missing output_file");
+  auto one_of = [](const std::string &key, const std::string &value, std::initializer_list<const char *> allowed) {
+    for (const char *a : allowed)
+      if (value == a) return;
+    throw std::runtime_error("config: " + key + " = " + value + " is not one of the choices");
+  };
+  one_of("outlet_backflow", cfg.outlet_backflow, {"extrapolate", "freestream"});
+  one_of("time_scheme", cfg.time_scheme, {"rk4", "implicit"});
+  one_of("pc", cfg.pc, {"lib", "bjacobi", "neumann"});
+  one_of("pmat", cfg.pmat, {"A", "decoupled"});
+  one_of("op", cfg.op, {"assembled", "matfree"});
+  one_of("partition", cfg.partition, {"kway", "random", "inertial"});
+  if (cfg.jacobian_interval < 1) throw std::runtime_error("config: jacobian_interval must be at least 1");
+  if (cfg.implicit_cfl <= 0.0) throw std::runtime_error("config: implicit_cfl must be positive");
+}
 
 inline std::string trim_copy(std::string value) {
   const std::size_t begin = value.find_first_not_of(" \t\r\n");
@@ -46,33 +146,8 @@ inline void load_config_file(const std::string &path, SolverConfig &cfg) {
     if (eq == std::string::npos) continue;
     const std::string key = trim_copy(line.substr(0, eq));
     const std::string value = trim_copy(line.substr(eq + 1));
-
-    if (key == "mesh_file") cfg.mesh_file = value;
-    else if (key == "output_file") cfg.output_file = value;
-    else if (key == "init_mode") cfg.init_mode = value;
-    else if (key == "hydra_inflow_xml") cfg.hydra_inflow_xml = value;
-    else if (key == "hydra_outflow_xml") cfg.hydra_outflow_xml = value;
-    else if (key == "hydra_benchmark_mach") cfg.hydra_benchmark_mach = std::stod(value);
-    else if (key == "iterations") cfg.iterations = std::stoi(value);
-    else if (key == "cfl") cfg.cfl = std::stod(value);
-    else if (key == "progress_interval") cfg.progress_interval = std::stoi(value);
-    else if (key == "second_order") cfg.second_order = std::stoi(value);
-    else if (key == "include_viscous") cfg.include_viscous = std::stoi(value);
-    else if (key == "include_sa") cfg.include_sa = std::stoi(value);
-    else if (key == "gamma") cfg.gamma = std::stod(value);
-    else if (key == "gas_constant") cfg.gas_constant = std::stod(value);
-    else if (key == "rho_floor") cfg.rho_floor = std::stod(value);
-    else if (key == "p_floor") cfg.p_floor = std::stod(value);
-    else if (key == "rho") cfg.primitive[0] = std::stod(value);
-    else if (key == "u") cfg.primitive[1] = std::stod(value);
-    else if (key == "v") cfg.primitive[2] = std::stod(value);
-    else if (key == "w") cfg.primitive[3] = std::stod(value);
-    else if (key == "p") cfg.primitive[4] = std::stod(value);
-    else if (key == "nu_tilde") cfg.primitive[5] = std::stod(value);
+    apply_config_value(cfg, key, value);
   }
-
-  if (cfg.mesh_file.empty()) throw std::runtime_error("config missing mesh_file");
-  if (cfg.output_file.empty()) throw std::runtime_error("config missing output_file");
 }
 
 inline std::vector<std::vector<double>> read_hydra_xml_rows(const std::string &path, std::size_t expected_columns) {

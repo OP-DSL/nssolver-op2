@@ -89,7 +89,7 @@ For node \(i\), the semi-discrete residual is
 
 +
 \sum_{f\in \partial \Omega_i}
-\left(\mathbf{F}^{inv}_{f}-\mathbf{F}^{visc}_{f}\right)\cdot \Delta\mathbf{S}_{f}
+\left(\mathbf{F}^{inv}_{f,i}-\mathbf{F}^{visc}_{f,i}\right)\cdot \Delta\mathbf{S}_{f,i}
 
 -
 V_i\mathbf{D}_{SA,i}.
@@ -99,7 +99,15 @@ Here:
 
 - \(V_i\) is the nodal dual volume
 - \(\Delta \mathbf{S}_{ij}\) is the directed dual-face area vector associated with edge \(i\to j\)
-- \(\Delta \mathbf{S}_f\) is the boundary-face area vector
+- \(\Delta \mathbf{S}_{f,i}\) is node \(i\)'s median sub-face of boundary face \(f\) (node, edge midpoints, face centroid)
+
+The dual mesh is the median dual: within each cell, edge \(i\to j\)'s dual face is the quad (edge midpoint, centroid of one adjacent cell face, cell centroid, centroid of the other), summed over the cells around the edge. Together with the boundary sub-faces, every control volume closes,
+
+\[
+\sum_{j\in N(i)} \Delta\mathbf{S}_{ij} + \sum_{f\in \partial \Omega_i} \Delta\mathbf{S}_{f,i} = 0,
+\]
+
+to round-off, so a uniform state has no residual anywhere, boundaries included.
 
 The solver uses OP2 edge loops for interior fluxes and OP2 boundary-face loops for boundary fluxes.
 
@@ -139,14 +147,16 @@ Primitive gradients are computed with a Green-Gauss approximation over the nodal
 \left[
 \sum_{j\in N(i)} \frac{1}{2}(\mathbf{W}_i+\mathbf{W}_j)\otimes \Delta \mathbf{S}_{ij}
 +
-\sum_{f\in \partial \Omega_i} \mathbf{W}_f\otimes \Delta \mathbf{S}_f
-\right].
+\sum_{f\in \partial \Omega_i} \mathbf{W}_{f,i}\otimes \Delta \mathbf{S}_{f,i}
+\right],
 \]
+
+where \(\mathbf{W}_{f,i}\) is the face's (bi)linear interpolant averaged over node \(i\)'s sub-face: \((9\mathbf{W}_i + 3\mathbf{W}_{next} + 3\mathbf{W}_{prev} + \mathbf{W}_{opp})/16\) on quads, \((22\mathbf{W}_i + 7\mathbf{W}_{next} + 7\mathbf{W}_{prev})/36\) on triangles, which is exact for linear fields on flat faces.
 
 In the OP2 implementation:
 
 - `edge_grad_kernel` contributes the interior edge term through indirect `OP_INC` updates to both endpoints
-- `bface_grad_kernel` contributes the boundary-face term through indirect `OP_INC` updates to the four boundary nodes
+- `bface_grad_kernel` contributes each node's sub-face term through indirect `OP_INC` updates to the face's nodes
 - `normalize_grad_kernel` divides by nodal volume
 
 The gradient storage is packed as 18 doubles per node:
@@ -249,7 +259,7 @@ p_R-p_L + \rho_L u_{n,L}(S_L-u_{n,L}) - \rho_R u_{n,R}(S_R-u_{n,R})
 }.
 \]
 
-The flux is then assembled piecewise from left, star-left, star-right, or right states.
+The flux is then assembled piecewise from left, star-left, star-right, or right states. Across a band \(|S_M| \le 10^{-8}(|S_L|+|S_R|+|S_M|)\) the star-left and star-right fluxes are blended linearly: they agree to \(O(S_M)\), so the flux stays continuous where a sign test would flip with round-off (every edge whose dual face is parallel to the flow sits at \(S_M \approx 0\)). Falling back to HLL there instead, as the solver once did, puts an \(O(1)\) jump into the residual, which stalls convergence and breaks Newton's method. HLL remains the fallback for degenerate wave-speed estimates only.
 
 Implementation:
 
@@ -307,7 +317,7 @@ Supported boundary types:
 
 ### 9.1 Inviscid Boundary State Construction
 
-The solver forms a face-averaged interior primitive state \(\mathbf{W}_{int}\), then constructs a ghost state \(\mathbf{W}_{ghost}\):
+Each node of a boundary face takes the flux through its own sub-face \(\Delta\mathbf{S}_{f,i}\), from its own state \(\mathbf{W}_i\) and a ghost state built from it. (A single flux from the face-averaged state, shared equally, leaves the boundary blind to node-to-node oscillations along it.) The ghost state \(\mathbf{W}_{ghost}\) is:
 
 - `Farfield`, `Inlet`: replace with freestream primitive
 - `Outlet`: copy interior state, replace only pressure with freestream pressure
@@ -321,16 +331,17 @@ Implementation:
 
 ### 9.2 Boundary-Node State Enforcement
 
-For viscous runs, the OP2 implementation also enforces boundary node states before each Runge-Kutta stage:
+For viscous runs, the OP2 implementation also enforces boundary node states before each Runge-Kutta stage and after each implicit update:
 
 - inlet/farfield nodes are reset to freestream
 - no-slip wall nodes are forced to zero velocity
-- slip-wall nodes have normal velocity removed
-- outlet nodes use the configured static pressure
+
+These components have no residual (`zero_constrained_kernel`): the enforcement sets them. Slip walls and outlets are weak, through their ghost states' fluxes only. Projecting slip nodes' velocity onto the wall would undo part of every update the residual asks for, and a node on two slip planes has no single normal to project on.
 
 This is done through:
 
 - `enforce_boundary_node_kernel`
+- `zero_constrained_kernel`, from the node's Dirichlet and no-slip entries (`node_bc_kernel`)
 
 This kernel is intentionally limited to boundary nodes and uses indirect `OP_RW` only on `q` through a boundary-node to node map.
 
@@ -342,12 +353,14 @@ The pseudo-time step at node \(i\) is
 \Delta t_i = \text{CFL}\frac{V_i}{\lambda_i + \varepsilon}
 \]
 
-where the inviscid spectral contribution is accumulated from connected edges:
+where the inviscid spectral contribution is accumulated over the node's whole surface, its edges and its boundary sub-faces:
 
 \[
 \lambda_i^{inv}
 =
-\sum_{j\in N(i)} |\Delta S_{ij}|\left(|u_n|+a\right).
+\sum_{j\in N(i)} |\Delta S_{ij}|\left(|u_n|+a\right)
++
+\sum_{f\in \partial \Omega_i} |\Delta S_{f,i}|\left(|u_n|+a\right).
 \]
 
 For viscous runs an additional penalty is added:
@@ -359,6 +372,7 @@ For viscous runs an additional penalty is added:
 Implementation:
 
 - `edge_spectral_kernel`
+- `bface_spectral_kernel`
 - `compute_dt_scaled_kernel`
 
 ## 11. Runge-Kutta Marching
@@ -432,8 +446,8 @@ The principal dats are:
 
 - node geometry: `node_coordinates`, `node_volume`, `node_wall_distance`
 - edge geometry: `edge_weights`
-- boundary geometry: `bface_normal`, `bface_area`, `bface_type`, `bface_group`
-- boundary-node metadata: `bnode_dirichlet`, `bnode_wall`, `bnode_slip`, `bnode_normal`
+- boundary geometry: `bface_normal`, `bface_node_normals`, `bface_area`, `bface_num_nodes`, `bface_type`, `bface_group`
+- boundary-node metadata: `bnode_dirichlet`, `bnode_wall`, and per node `node_bc` from them
 - solution/state: `q`, `q0`, `primitive`, `residual`, `spectral`, `dt`, `grad`
 
 ### 13.1 Access Pattern Design
@@ -457,6 +471,8 @@ The OP2 executable does not read the original internal mesh objects or raw Hydra
 - `edge_weights [E,3]`
 - `bface-->node [F,4]`
 - `bface_normal [F,3]`
+- `bface_node_normals [F,12]`: each node's median sub-face area vector (zero for a triangle's fourth)
+- `bface_num_nodes [F,1]`
 - `bface_area [F,1]`
 - `bface_group [F,1]`
 - `bface_type [F,1]`
@@ -466,7 +482,7 @@ The OP2 executable does not read the original internal mesh objects or raw Hydra
 - `bnode_slip [Nb,1]`
 - `bnode_normal [Nb,3]`
 
-All connectivity is zero-based in the preprocessed OP2 mesh.
+All connectivity is zero-based in the preprocessed OP2 mesh. Meshes written before `bface_node_normals` existed must be preprocessed again. (The solver no longer reads `bnode_slip` and `bnode_normal`.)
 
 The local preprocessing helper also supports procedural structured meshes with
 runtime parameter overrides. `bump3d` and `axisymmetric_body` now default to
@@ -532,3 +548,66 @@ Known status at the time of writing:
 - `box` remains near roundoff
 - `bump` remains inside the validated OP2 residual band
 - `flatplate_develop` remains inside the validated OP2 residual band and produces wall/profile benchmark CSVs
+
+## 17. Implicit Pseudo-Time Stepping
+
+`time_scheme = implicit` replaces the four-stage RK update by backward-Euler
+pseudo-time steps through OP2's solver layer (`op_solve.h`, OP2's
+`feature/solvers-prototype`):
+
+$$
+\left(\frac{V_i}{\Delta t_i} I + \frac{\partial R}{\partial q}\right)\Delta q = -R(q),
+\qquad q \leftarrow q + \omega\,\Delta q
+$$
+
+with $V_i/\Delta t_i = \lambda_i / \text{CFL}$ from the same spectral radius
+as the explicit step, the CFL starting at `implicit_cfl`, multiplied by
+`implicit_cfl_growth` each iteration up to `implicit_cfl_max`, and
+$\omega$ = `implicit_relax`. An update is kept where it is admissible, as the
+RK update's, and counted as rejected otherwise.
+
+The matrix is $\partial R/\partial q$ of the first-order residual, with
+$6\times 6$ blocks on the edge graph, assembled by par loops straight into the
+solver library's storage (`op_arg_mat`):
+
+- each edge: the derivatives of its first-order flux (HLLC less thin-layer
+  viscous) by both end states, by one-sided differences of the same flux
+  functions (step $10^{-7}\max(|q_c|, s_c)$ in component $c$), as four
+  blocks;
+- each boundary sub-face: the derivative of the node's boundary flux (ghost
+  state included) by the node's state, the same way, on the node's diagonal
+  block;
+- each node: the pseudo-time term and the SA destruction's derivative.
+
+For first-order runs this is the residual's Jacobian (Newton's method at
+large CFL); second-order runs keep it as an approximation.
+
+Components the viscous scheme enforces (all at Dirichlet nodes, momentum at
+no-slip nodes) are rows of the identity with a zero right-hand side. The
+system is solved in variables scaled by the free stream
+($\rho, \rho a, \rho a^2, \rho\nu$), which balances the Krylov norms.
+
+The linear solve takes the OP2 implicit proxy's options (`apps/c/implicit`),
+as config keys or `--key value` on the command line:
+
+| option | values | meaning |
+|---|---|---|
+| `solve_config` | file | the solver layer's JSON (`configs/solve.json`); `OP_SOLVE_CONFIG` over it picks the library |
+| `pc` | `lib`, `bjacobi`, `neumann` | the library's preconditioner, or par loops reading the assembled blocks: block Jacobi, or a Neumann series of `terms` steps |
+| `pmat` | `A`, `decoupled` | the library's preconditioner from the matrix, or from each block's diagonal only |
+| `op` | `assembled`, `matfree` | the operator: the matrix, or differences of the full (second-order) residual with the matrix as preconditioner (JFNK) |
+| `jacobian_interval` | N | reassemble every N iterations |
+| `partition` | `kway`, `random`, `inertial` | ParMETIS, OP2's random, or its inertial partitioner |
+| `reorder` | 0, 1 | renumber each rank's mesh after partitioning (`op_renumber`) |
+| `diags`, `timing`, `check` | | OP2's diagnostics, timing output, and a check that fails the run unless L2(rho) falls by `check` |
+
+The solvers are named `nssolver`, `nssolver_bjacobi` and `nssolver_neumann`
+in the JSON, each in every library's own terms. `tests/test_implicit.sh`
+runs the scheme across libraries, variants and these options.
+
+`outlet_backflow = freestream` gives an outlet face whose interior flow
+points inward the free-stream ghost state, as an inlet would. The default,
+`extrapolate`, keeps the interior state with the far-field pressure, under
+which a reversed outflow can feed itself. With closed control volumes no case
+here develops backflow (the two give identical histories), so this is a
+safeguard only.

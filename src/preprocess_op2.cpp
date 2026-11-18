@@ -142,6 +142,8 @@ void write_op2_mesh_hdf5(const Mesh& mesh, const std::string& output_path) {
 
     write_dataset_2d(file, "bface-->node", mesh.boundary_faces.count, 4, bface_nodes.data());
     write_dataset_2d(file, "bface_normal", mesh.boundary_faces.count, 3, bface_normals.data());
+    const auto bface_node_normals = boundary_node_normals(mesh);
+    write_dataset_2d(file, "bface_node_normals", mesh.boundary_faces.count, 12, bface_node_normals.data());
     write_dataset_1d(file, "bface_area", mesh.boundary_faces.count, mesh.boundary_faces.area.data());
     write_dataset_1d(file, "bface_num_nodes", mesh.boundary_faces.count, bface_num_nodes.data());
     write_dataset_1d(file, "bface_group", mesh.boundary_faces.count, mesh.boundary_faces.group_id.data());

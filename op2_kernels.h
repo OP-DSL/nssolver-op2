@@ -32,6 +32,7 @@ extern double op2_p_floor;
 extern int op2_second_order;
 extern int op2_include_viscous;
 extern int op2_include_sa;
+extern int op2_outlet_backflow;
 
 inline double cv_op2() { return op2_gas_constant / (op2_gamma - 1.0); }
 
@@ -197,11 +198,13 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
     hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
     return;
   }
+  // The left star flux for s_m > 0, the right one below, blended linearly
+  // across a band around the contact: the two agree to O(s_m), so the flux
+  // stays continuous (and differentiable to the band's width) where a sign
+  // test would flip with round-off.
   const double contact_scale = fmax(fabs(s_l) + fabs(s_r) + fabs(s_m), 1.0);
-  if (fabs(s_m) <= 1.0e-8 * contact_scale) {
-    hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
-    return;
-  }
+  const double band = 1.0e-8 * contact_scale;
+  const double weight_l = fmin(1.0, fmax(0.0, 0.5 + 0.5 * s_m / band));
 
   const double p_star_l = pl[4] + ql[0] * (s_l - un_l) * (s_m - un_l);
   const double p_star_r = pr[4] + qr[0] * (s_r - un_r) * (s_m - un_r);
@@ -236,20 +239,17 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
     return true;
   };
 
-  if (s_m >= 0.0) {
-    double q_star_l[NVAR_OP2];
-    if (!star_state(pl, ql, s_l, un_l, p_star_l, q_star_l)) {
-      hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
-      return;
-    }
-    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_l[m] + s_l * area * (q_star_l[m] - ql[m]);
-  } else {
-    double q_star_r[NVAR_OP2];
-    if (!star_state(pr, qr, s_r, un_r, p_star_r, q_star_r)) {
-      hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
-      return;
-    }
-    for (int m = 0; m < NVAR_OP2; ++m) flux[m] = f_r[m] + s_r * area * (q_star_r[m] - qr[m]);
+  double q_star_l[NVAR_OP2];
+  double q_star_r[NVAR_OP2];
+  if ((weight_l > 0.0 && !star_state(pl, ql, s_l, un_l, p_star_l, q_star_l)) ||
+      (weight_l < 1.0 && !star_state(pr, qr, s_r, un_r, p_star_r, q_star_r))) {
+    hll_flux_op2(pl, ql, pr, qr, area_vec, s_l, s_r, flux);
+    return;
+  }
+  for (int m = 0; m < NVAR_OP2; ++m) {
+    const double left = weight_l > 0.0 ? f_l[m] + s_l * area * (q_star_l[m] - ql[m]) : 0.0;
+    const double right = weight_l < 1.0 ? f_r[m] + s_r * area * (q_star_r[m] - qr[m]) : 0.0;
+    flux[m] = weight_l * left + (1.0 - weight_l) * right;
   }
 }
 
@@ -305,12 +305,18 @@ inline void make_boundary_ghost_state_op2(const double *interior, const double *
     for (int m = 0; m < NVAR_OP2; ++m) ghost[m] = op2_freestream[m];
     return;
   }
+  const double un = interior[1] * unit_normal[0] + interior[2] * unit_normal[1] + interior[3] * unit_normal[2];
   if (boundary_type == BTYPE_OUTLET) {
+    // With outlet_backflow = freestream, backflow takes the free stream as an
+    // inlet would: extrapolated, a reversed outflow can feed itself.
+    if (op2_outlet_backflow && un < 0.0) {
+      for (int m = 0; m < NVAR_OP2; ++m) ghost[m] = op2_freestream[m];
+      return;
+    }
     ghost[4] = op2_freestream[4];
     return;
   }
 
-  const double un = interior[1] * unit_normal[0] + interior[2] * unit_normal[1] + interior[3] * unit_normal[2];
   ghost[1] = interior[1] - 2.0 * un * unit_normal[0];
   ghost[2] = interior[2] - 2.0 * un * unit_normal[1];
   ghost[3] = interior[3] - 2.0 * un * unit_normal[2];
@@ -337,9 +343,13 @@ inline void zero_scalar_kernel(double *value) { value[0] = 0.0; }
 
 inline void q_to_primitive_kernel(const double *q, double *prim) { conservative_to_primitive_op2(q, prim); }
 
-inline void enforce_boundary_node_kernel(const int *is_dirichlet, const int *is_wall, const int *is_slip,
-                                         const double *normal, double *q) {
-  if (!op2_include_viscous) {
+// The viscous scheme's strong conditions: the free stream at Dirichlet nodes
+// and no velocity at no-slip ones. Slip walls are weak, through the reflected
+// ghost's flux: projecting their nodes' velocity would undo part of each
+// update the residual asks for (and a node on two slip planes has no single
+// normal to project on).
+inline void enforce_boundary_node_kernel(const int *is_dirichlet, const int *is_wall, double *q) {
+  if (!op2_include_viscous || (!is_dirichlet[0] && !is_wall[0])) {
     return;
   }
   double p[NPRIM_OP2];
@@ -351,15 +361,6 @@ inline void enforce_boundary_node_kernel(const int *is_dirichlet, const int *is_
     p[1] = 0.0;
     p[2] = 0.0;
     p[3] = 0.0;
-  } else if (is_slip[0]) {
-    const double nmag = vec_norm3(normal);
-    if (nmag > 1.0e-14) {
-      const double un = (p[1] * normal[0] + p[2] * normal[1] + p[3] * normal[2]) / nmag;
-      const double unit_normal[3] = {normal[0] / nmag, normal[1] / nmag, normal[2] / nmag};
-      p[1] -= un * unit_normal[0];
-      p[2] -= un * unit_normal[1];
-      p[3] -= un * unit_normal[2];
-    }
   }
   primitive_to_conservative_op2(p, q);
 }
@@ -401,25 +402,72 @@ inline void edge_grad_kernel(const double *prim_l, const double *prim_r, const d
   }
 }
 
-inline void bface_grad_kernel(const double *normal, const int *num_nodes, const double *prim1, const double *prim2, const double *prim3, const double *prim4,
-                              double *grad1, double *grad2, double *grad3, double *grad4) {
-  // Boundary faces contribute a face-averaged primitive value projected along
-  // the outward face normal, shared equally across the active incident nodes.
-  const double inv_nodes = 1.0 / num_nodes[0] > 1 ? num_nodes[0] : 1;
-  double face_prim[NPRIM_OP2];
+// Weight of face node k in the average over node j's median sub-face of the
+// face's (bi)linear interpolant: exact for linear fields on flat faces.
+inline double subface_weight_op2(int nodes, int j, int k) {
+  if (k == j) return nodes == 4 ? 9.0 / 16.0 : 22.0 / 36.0;
+  if (nodes == 4 && (k - j + 4) % 4 == 2) return 1.0 / 16.0;
+  return nodes == 4 ? 3.0 / 16.0 : 7.0 / 36.0;
+}
+
+inline void bface_grad_kernel(const int *num_nodes, const double *shares, const double *prim1, const double *prim2,
+                              const double *prim3, const double *prim4, double *grad1, double *grad2, double *grad3,
+                              double *grad4) {
+  // Each node's median sub-face of the face contributes the face's
+  // interpolant averaged over it, times the sub-face's area vector, which
+  // closes the node's Green-Gauss surface.
+  const int nodes = num_nodes[0] == 4 ? 4 : 3;
+  double p[4][NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {
-    face_prim[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
-    const int base = 3 * m;
-    const double cx = inv_nodes * normal[0] * face_prim[m];
-    const double cy = inv_nodes * normal[1] * face_prim[m];
-    const double cz = inv_nodes * normal[2] * face_prim[m];
-    grad1[base + 0] += cx; grad1[base + 1] += cy; grad1[base + 2] += cz;
-    grad2[base + 0] += cx; grad2[base + 1] += cy; grad2[base + 2] += cz;
-    grad3[base + 0] += cx; grad3[base + 1] += cy; grad3[base + 2] += cz;
-    if (num_nodes[0] == 4) {
-      grad4[base + 0] += cx; grad4[base + 1] += cy; grad4[base + 2] += cz;
+    p[0][m] = prim1[m];
+    p[1][m] = prim2[m];
+    p[2][m] = prim3[m];
+    p[3][m] = prim4[m];
+  }
+  double g[4][NGRAD_OP2];
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < NGRAD_OP2; ++i) g[j][i] = 0.0;
+  for (int j = 0; j < nodes; ++j)
+    for (int m = 0; m < NPRIM_OP2; ++m) {
+      double value = 0.0;
+      for (int k = 0; k < nodes; ++k) value += subface_weight_op2(nodes, j, k) * p[k][m];
+      for (int d = 0; d < 3; ++d) g[j][3 * m + d] = value * shares[3 * j + d];
+    }
+  for (int i = 0; i < NGRAD_OP2; ++i) {
+    grad1[i] += g[0][i];
+    grad2[i] += g[1][i];
+    grad3[i] += g[2][i];
+    if (nodes == 4) grad4[i] += g[3][i];
+  }
+}
+
+// The boundary's share of a node's spectral radius, as the edges' in
+// edge_spectral_kernel: each node by its own state and sub-face.
+inline void bface_spectral_kernel(const int *num_nodes, const double *shares, const double *prim1, const double *prim2,
+                                  const double *prim3, const double *prim4, const double *vol1, const double *vol2,
+                                  const double *vol3, const double *vol4, double *spec1, double *spec2, double *spec3,
+                                  double *spec4) {
+  const int nodes = num_nodes[0] == 4 ? 4 : 3;
+  double s[4] = {0.0, 0.0, 0.0, 0.0};
+  for (int j = 0; j < nodes; ++j) {
+    double p[NPRIM_OP2];
+    for (int m = 0; m < NPRIM_OP2; ++m)
+      p[m] = j == 0 ? prim1[m] : j == 1 ? prim2[m] : j == 2 ? prim3[m] : prim4[m];
+    const double vol = j == 0 ? vol1[0] : j == 1 ? vol2[0] : j == 2 ? vol3[0] : vol4[0];
+    const double S[3] = {shares[3 * j], shares[3 * j + 1], shares[3 * j + 2]};
+    const double area = vec_norm3(S);
+    if (area <= 1.0e-300) continue;
+    const double unit_normal[3] = {S[0] / area, S[1] / area, S[2] / area};
+    s[j] = area * (fabs(normal_velocity_op2(p, unit_normal)) + speed_of_sound_op2(p));
+    if (op2_include_viscous) {
+      const double mu = dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant));
+      s[j] += 2.0 * mu * area * area / fmax(p[0] * vol, 1.0e-14);
     }
   }
+  spec1[0] += s[0];
+  spec2[0] += s[1];
+  spec3[0] += s[2];
+  if (nodes == 4) spec4[0] += s[3];
 }
 
 inline void normalize_grad_kernel(const double *volume, double *grad) {
@@ -479,59 +527,91 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
   }
 }
 
-inline void boundary_flux_kernel(const int *btype, const double *normal, const double *area, const int *num_nodes,
-                                 const double *vol1, const double *vol2,
-                                 const double *vol3, const double *vol4, const double *prim1, const double *prim2, const double *prim3,
-                                 const double *prim4, double *r1, double *r2, double *r3, double *r4) {
-  // Boundary faces use a face-averaged interior state, a type-specific ghost
-  // state, and an equal split of the resulting flux back to the face nodes.
-  const double inv_nodes = 1.0 / num_nodes[0] > 1 ? num_nodes[0] : 1;
-  double p_int[NPRIM_OP2] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  for (int m = 0; m < NPRIM_OP2; ++m) {
-    p_int[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (num_nodes[0] == 4 ? prim4[m] : 0.0));
-  }
-
-  const double amag = fmax(area[0], 1.0e-14);
-  const double unit_normal[3] = {normal[0] / amag, normal[1] / amag, normal[2] / amag};
+// The flux through a node's sub-face S of a boundary face of type btype
+// (unit normal n), from the node's own state p and its type-specific ghost,
+// and at a no-slip wall the thin-layer viscous flux over distance.
+inline void boundary_node_flux_op2(const double *p, const double *S, const double *n, int btype, double distance,
+                                   double *flux) {
   double p_ghost[NPRIM_OP2];
-  make_boundary_ghost_state_op2(p_int, unit_normal, btype[0], p_ghost);
-  double q_int[NVAR_OP2];
+  make_boundary_ghost_state_op2(p, n, btype, p_ghost);
+  double q[NVAR_OP2];
   double q_ghost[NVAR_OP2];
-  primitive_to_conservative_op2(p_int, q_int);
+  primitive_to_conservative_op2(p, q);
   primitive_to_conservative_op2(p_ghost, q_ghost);
+  hllc_flux_op2(p, q, p_ghost, q_ghost, S, flux);
 
-  double flux[NVAR_OP2];
-  hllc_flux_op2(p_int, q_int, p_ghost, q_ghost, normal, flux);
-
-  if (op2_include_viscous && btype[0] == BTYPE_NOSLIPWALL) {
+  if (op2_include_viscous && btype == BTYPE_NOSLIPWALL) {
     double wall_state[NPRIM_OP2];
-    for (int m = 0; m < NPRIM_OP2; ++m) wall_state[m] = p_int[m];
+    for (int m = 0; m < NPRIM_OP2; ++m) wall_state[m] = p[m];
     wall_state[1] = 0.0;
     wall_state[2] = 0.0;
     wall_state[3] = 0.0;
-    const double volume_sum = vol1[0] + vol2[0] + vol3[0] + (num_nodes[0] == 4 ? vol4[0] : 0.0);
-    const double distance = fmax(volume_sum / ((double)(num_nodes[0]) * amag), 1.0e-12);
-    const double delta_r[3] = {distance * unit_normal[0], distance * unit_normal[1], distance * unit_normal[2]};
+    const double delta_r[3] = {distance * n[0], distance * n[1], distance * n[2]};
     double viscous[NVAR_OP2];
-    thin_layer_viscous_flux_op2(p_int, wall_state, delta_r, normal, viscous);
+    thin_layer_viscous_flux_op2(p, wall_state, delta_r, S, viscous);
     for (int m = 0; m < NVAR_OP2; ++m) flux[m] -= viscous[m];
-  }
-
-  for (int m = 0; m < NVAR_OP2; ++m) {
-    const double share = inv_nodes * flux[m];
-    r1[m] += share;
-    r2[m] += share;
-    r3[m] += share;
-    if (num_nodes[0] == 4) {
-      r4[m] += share;
-    }
   }
 }
 
-inline void sa_source_kernel(const double *prim, const double *grad, const double *wall_dist, const double *volume, double *res) {
-  // The SA source term is accumulated directly into the turbulence residual
-  // component at each node after the flux terms have been assembled.
-  if (!op2_include_sa) return;
+inline void boundary_flux_kernel(const int *btype, const double *normal, const double *area, const int *num_nodes,
+                                 const double *shares, const double *vol1, const double *vol2, const double *vol3,
+                                 const double *vol4, const double *prim1, const double *prim2, const double *prim3,
+                                 const double *prim4, double *r1, double *r2, double *r3, double *r4) {
+  // Each node of a boundary face takes the flux through its median sub-face
+  // from its own state and its ghost: a face-averaged state would leave the
+  // boundary blind to node-to-node oscillations along it.
+  const int nodes = num_nodes[0] == 4 ? 4 : 3;
+  const double amag = fmax(area[0], 1.0e-14);
+  const double unit_normal[3] = {normal[0] / amag, normal[1] / amag, normal[2] / amag};
+  double f[4][NVAR_OP2];
+  for (int j = 0; j < 4; ++j)
+    for (int m = 0; m < NVAR_OP2; ++m) f[j][m] = 0.0;
+  for (int j = 0; j < nodes; ++j) {
+    double p[NPRIM_OP2];
+    for (int m = 0; m < NPRIM_OP2; ++m)
+      p[m] = j == 0 ? prim1[m] : j == 1 ? prim2[m] : j == 2 ? prim3[m] : prim4[m];
+    const double vol = j == 0 ? vol1[0] : j == 1 ? vol2[0] : j == 2 ? vol3[0] : vol4[0];
+    const double S[3] = {shares[3 * j], shares[3 * j + 1], shares[3 * j + 2]};
+    const double distance = fmax(vol / (nodes * fmax(vec_norm3(S), 1.0e-300)), 1.0e-12);
+    boundary_node_flux_op2(p, S, unit_normal, btype[0], distance, f[j]);
+  }
+  for (int m = 0; m < NVAR_OP2; ++m) {
+    r1[m] += f[0][m];
+    r2[m] += f[1][m];
+    r3[m] += f[2][m];
+    if (nodes == 4) r4[m] += f[3][m];
+  }
+}
+
+// Whether the viscous scheme enforces component m at a node
+// (enforce_boundary_node_kernel): bc counts the node's Dirichlet and no-slip
+// boundary entries (node_bc_kernel).
+inline bool constrained_op2(const int *bc, int m) {
+  if (!op2_include_viscous) return false;
+  if (bc[0] > 0) return true;
+  return bc[1] > 0 && m >= 1 && m <= 3;
+}
+
+inline void zero_node_bc_kernel(int *bc) {
+  bc[0] = 0;
+  bc[1] = 0;
+}
+
+inline void node_bc_kernel(const int *is_dirichlet, const int *is_wall, int *bc) {
+  bc[0] += is_dirichlet[0] ? 1 : 0;
+  bc[1] += is_wall[0] ? 1 : 0;
+}
+
+// Enforced components have no residual: the enforcement sets them.
+inline void zero_constrained_kernel(const int *bc, double *res) {
+  for (int m = 0; m < NVAR_OP2; ++m)
+    if (constrained_op2(bc, m)) res[m] = 0.0;
+}
+
+// The SA production and destruction of nu_tilde at a node; false where
+// nu_tilde <= 0, which has neither.
+inline bool sa_terms_op2(const double *prim, const double *grad, const double *wall_dist, double *production,
+                         double *destruction) {
   constexpr double cb1 = 0.1355;
   constexpr double cb2 = 0.622;
   constexpr double sigma = 2.0 / 3.0;
@@ -545,7 +625,7 @@ inline void sa_source_kernel(const double *prim, const double *grad, const doubl
   const double nu = dynamic_viscosity_op2(temperature) / prim[0];
   const double nu_tilde = fmax(prim[5], 0.0);
   const double d = fmax(wall_dist[0], 1.0e-8);
-  if (nu_tilde <= 0.0) return;
+  if (nu_tilde <= 0.0) return false;
 
   const double wx = grad[3 * IDX_W + 1] - grad[3 * IDX_V + 2];
   const double wy = grad[3 * IDX_U + 2] - grad[3 * IDX_W + 0];
@@ -559,8 +639,17 @@ inline void sa_source_kernel(const double *prim, const double *grad, const doubl
   const double r = fmin(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
   const double g = r + cw2 * (pow(r, 6) - r);
   const double fw = g * pow((1.0 + pow(cw3, 6)) / (pow(g, 6) + pow(cw3, 6)), 1.0 / 6.0);
-  const double production = cb1 * s_tilde * nu_tilde;
-  const double destruction = cw1 * fw * nu_tilde * nu_tilde / (d * d);
+  production[0] = cb1 * s_tilde * nu_tilde;
+  destruction[0] = cw1 * fw * nu_tilde * nu_tilde / (d * d);
+  return true;
+}
+
+inline void sa_source_kernel(const double *prim, const double *grad, const double *wall_dist, const double *volume, double *res) {
+  // The SA source term is accumulated directly into the turbulence residual
+  // component at each node after the flux terms have been assembled.
+  if (!op2_include_sa) return;
+  double production, destruction;
+  if (!sa_terms_op2(prim, grad, wall_dist, &production, &destruction)) return;
   res[5] -= volume[0] * prim[0] * (production - destruction);
 }
 
@@ -582,3 +671,5 @@ inline void residual_norm_kernel(const double *res, double *l2rho, double *l2rho
   l2rhoE[0] += res[4] * res[4];
   linf_rho[0] = fmax(linf_rho[0], fabs(res[0]));
 }
+
+#include "op2_implicit_kernels.h"

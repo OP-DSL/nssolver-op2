@@ -19,3 +19,4 @@ nssolver_op2_cuda
 *_wall_cp.csv
 *_profile_*.csv
 meshes/*.xml
+build/
