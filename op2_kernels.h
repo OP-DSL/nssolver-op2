@@ -32,6 +32,7 @@ extern double op2_p_floor;
 extern int op2_second_order;
 extern int op2_include_viscous;
 extern int op2_include_sa;
+extern int op2_outlet_backflow;
 
 inline double cv_op2() { return op2_gas_constant / (op2_gamma - 1.0); }
 
@@ -305,12 +306,18 @@ inline void make_boundary_ghost_state_op2(const double *interior, const double *
     for (int m = 0; m < NVAR_OP2; ++m) ghost[m] = op2_freestream[m];
     return;
   }
+  const double un = interior[1] * unit_normal[0] + interior[2] * unit_normal[1] + interior[3] * unit_normal[2];
   if (boundary_type == BTYPE_OUTLET) {
+    // With outlet_backflow = freestream, backflow takes the free stream as an
+    // inlet would: extrapolated, a reversed outflow can feed itself.
+    if (op2_outlet_backflow && un < 0.0) {
+      for (int m = 0; m < NVAR_OP2; ++m) ghost[m] = op2_freestream[m];
+      return;
+    }
     ghost[4] = op2_freestream[4];
     return;
   }
 
-  const double un = interior[1] * unit_normal[0] + interior[2] * unit_normal[1] + interior[3] * unit_normal[2];
   ghost[1] = interior[1] - 2.0 * un * unit_normal[0];
   ghost[2] = interior[2] - 2.0 * un * unit_normal[1];
   ghost[3] = interior[3] - 2.0 * un * unit_normal[2];

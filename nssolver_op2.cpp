@@ -28,6 +28,7 @@ double op2_p_floor = 100.0;
 int op2_second_order = 0;
 int op2_include_viscous = 0;
 int op2_include_sa = 0;
+int op2_outlet_backflow = 0;
 double op2_scale[6] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
 
 struct ResidualNorms {
@@ -437,6 +438,7 @@ int main(int argc, char **argv) {
     op2_second_order = cfg.second_order;
     op2_include_viscous = cfg.include_viscous;
     op2_include_sa = cfg.include_sa;
+    op2_outlet_backflow = cfg.outlet_backflow == "freestream";
     for (int i = 0; i < 6; ++i) op2_freestream[i] = cfg.primitive[i];
 
     // The implicit scheme's reference state: rho, rho a, rho a^2 and rho nu
@@ -466,6 +468,7 @@ int main(int argc, char **argv) {
     op_decl_const(1, "int", &op2_second_order);
     op_decl_const(1, "int", &op2_include_viscous);
     op_decl_const(1, "int", &op2_include_sa);
+    op_decl_const(1, "int", &op2_outlet_backflow);
     op_decl_const(NVAR_OP2, "double", op2_scale);
 
     const char *mesh_file = cfg.mesh_file.c_str();

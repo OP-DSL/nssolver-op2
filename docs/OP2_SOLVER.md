@@ -587,3 +587,10 @@ as config keys or `--key value` on the command line:
 The solvers are named `nssolver`, `nssolver_bjacobi` and `nssolver_neumann`
 in the JSON, each in every library's own terms. `tests/test_implicit.sh`
 runs the scheme across libraries, variants and these options.
+
+`outlet_backflow = freestream` gives an outlet face whose interior flow
+points inward the free-stream ghost state, as an inlet would. The default,
+`extrapolate`, keeps the interior state with the far-field pressure, under
+which a reversed outflow can feed itself: on `flatplate_develop` it does from
+about iteration 35, and the RK residual grows without bound past a few
+thousand iterations.

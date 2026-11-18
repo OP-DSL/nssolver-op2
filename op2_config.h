@@ -26,6 +26,9 @@ struct SolverConfig {
   double rho_floor = 1.0e-4;
   double p_floor = 100.0;
   double primitive[6] = {1.225, 120.0, 0.0, 0.0, 101325.0, 0.0};
+  // Outlet ghost state under backflow: extrapolate (the interior state with
+  // the free-stream pressure, as for outflow) or freestream.
+  std::string outlet_backflow = "extrapolate";
 
   // Time marching: rk4, or implicit pseudo-time steps through OP2's solver
   // layer at a CFL from implicit_cfl, times implicit_cfl_growth each
@@ -85,6 +88,7 @@ inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const 
   else if (key == "w") cfg.primitive[3] = std::stod(value);
   else if (key == "p") cfg.primitive[4] = std::stod(value);
   else if (key == "nu_tilde") cfg.primitive[5] = std::stod(value);
+  else if (key == "outlet_backflow") cfg.outlet_backflow = value;
   else if (key == "time_scheme") cfg.time_scheme = value;
   else if (key == "implicit_cfl") cfg.implicit_cfl = std::stod(value);
   else if (key == "implicit_cfl_max") cfg.implicit_cfl_max = std::stod(value);
@@ -113,6 +117,7 @@ inline void validate_config(const SolverConfig &cfg) {
       if (value == a) return;
     throw std::runtime_error("config: " + key + " = " + value + " is not one of the choices");
   };
+  one_of("outlet_backflow", cfg.outlet_backflow, {"extrapolate", "freestream"});
   one_of("time_scheme", cfg.time_scheme, {"rk4", "implicit"});
   one_of("pc", cfg.pc, {"lib", "bjacobi", "neumann"});
   one_of("pmat", cfg.pmat, {"A", "decoupled"});

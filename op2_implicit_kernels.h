@@ -140,7 +140,8 @@ inline void jac_bface_kernel(const int *btype, const double *normal, const doubl
 
   double G[NBLOCK_OP2];
   for (int k = 0; k < NBLOCK_OP2; ++k) G[k] = 0.0;
-  if (btype[0] == BTYPE_OUTLET) {
+  const bool backflow = op2_outlet_backflow && normal_velocity_op2(p_int, unit_normal) < 0.0;
+  if (btype[0] == BTYPE_OUTLET && !backflow) {
     // The ghost keeps rho, u and nu_tilde, and takes the far-field pressure.
     for (int m = 0; m < NVAR_OP2; ++m)
       if (m != 4) G[m * NVAR_OP2 + m] = 1.0;
