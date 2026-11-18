@@ -99,6 +99,25 @@ make flatplate
 
 Helper binaries are built locally under `.helpers/bin`. This repository does not depend on CMake for its own workflow.
 
+## Implicit Time Stepping
+
+`time_scheme = implicit` (or `--time-scheme implicit`) solves backward-Euler
+pseudo-time steps with a first-order Jacobian assembled into a solver library
+(PETSc, hypre, Ginkgo, AmgX, rocALUTION) through OP2's solver layer, which is
+on OP2's `feature/solvers-prototype` branch and built by its CMake. Build the
+app with CMake against that OP2, installed:
+
+```bash
+cmake -S . -B build -DOP2_DIR=<op2-prefix>/lib/cmake/op2 && cmake --build build
+OP_SOLVE_CONFIG='{"library": "petsc"}' build/nssolver_op2_seq --config configs/bump.cfg \
+  --time-scheme implicit --implicit-cfl 10 --solve-config configs/solve.json --pc bjacobi
+BUILD_DIR=build tests/test_implicit.sh
+```
+
+Any config key can be given on the command line as `--key value`. The scheme
+and the linear solve's options (`pc`, `pmat`, `op`, `partition`, `reorder`,
+...) are in `docs/OP2_SOLVER.md`, section 17.
+
 ## Formula-Driven Preprocessing Meshes
 
 The preprocessing helper supports procedural mesh generation with explicit size

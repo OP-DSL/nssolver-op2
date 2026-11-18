@@ -528,10 +528,10 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
   }
 }
 
-inline void sa_source_kernel(const double *prim, const double *grad, const double *wall_dist, const double *volume, double *res) {
-  // The SA source term is accumulated directly into the turbulence residual
-  // component at each node after the flux terms have been assembled.
-  if (!op2_include_sa) return;
+// The SA production and destruction of nu_tilde at a node; false where
+// nu_tilde <= 0, which has neither.
+inline bool sa_terms_op2(const double *prim, const double *grad, const double *wall_dist, double *production,
+                         double *destruction) {
   constexpr double cb1 = 0.1355;
   constexpr double cb2 = 0.622;
   constexpr double sigma = 2.0 / 3.0;
@@ -545,7 +545,7 @@ inline void sa_source_kernel(const double *prim, const double *grad, const doubl
   const double nu = dynamic_viscosity_op2(temperature) / prim[0];
   const double nu_tilde = fmax(prim[5], 0.0);
   const double d = fmax(wall_dist[0], 1.0e-8);
-  if (nu_tilde <= 0.0) return;
+  if (nu_tilde <= 0.0) return false;
 
   const double wx = grad[3 * IDX_W + 1] - grad[3 * IDX_V + 2];
   const double wy = grad[3 * IDX_U + 2] - grad[3 * IDX_W + 0];
@@ -559,8 +559,17 @@ inline void sa_source_kernel(const double *prim, const double *grad, const doubl
   const double r = fmin(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
   const double g = r + cw2 * (pow(r, 6) - r);
   const double fw = g * pow((1.0 + pow(cw3, 6)) / (pow(g, 6) + pow(cw3, 6)), 1.0 / 6.0);
-  const double production = cb1 * s_tilde * nu_tilde;
-  const double destruction = cw1 * fw * nu_tilde * nu_tilde / (d * d);
+  production[0] = cb1 * s_tilde * nu_tilde;
+  destruction[0] = cw1 * fw * nu_tilde * nu_tilde / (d * d);
+  return true;
+}
+
+inline void sa_source_kernel(const double *prim, const double *grad, const double *wall_dist, const double *volume, double *res) {
+  // The SA source term is accumulated directly into the turbulence residual
+  // component at each node after the flux terms have been assembled.
+  if (!op2_include_sa) return;
+  double production, destruction;
+  if (!sa_terms_op2(prim, grad, wall_dist, &production, &destruction)) return;
   res[5] -= volume[0] * prim[0] * (production - destruction);
 }
 
@@ -582,3 +591,5 @@ inline void residual_norm_kernel(const double *res, double *l2rho, double *l2rho
   l2rhoE[0] += res[4] * res[4];
   linf_rho[0] = fmax(linf_rho[0], fabs(res[0]));
 }
+
+#include "op2_implicit_kernels.h"

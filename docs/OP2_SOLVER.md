@@ -532,3 +532,58 @@ Known status at the time of writing:
 - `box` remains near roundoff
 - `bump` remains inside the validated OP2 residual band
 - `flatplate_develop` remains inside the validated OP2 residual band and produces wall/profile benchmark CSVs
+
+## 17. Implicit Pseudo-Time Stepping
+
+`time_scheme = implicit` replaces the four-stage RK update by backward-Euler
+pseudo-time steps through OP2's solver layer (`op_solve.h`, OP2's
+`feature/solvers-prototype`):
+
+$$
+\left(\frac{V_i}{\Delta t_i} I + \frac{\partial R}{\partial q}\right)\Delta q = -R(q),
+\qquad q \leftarrow q + \omega\,\Delta q
+$$
+
+with $V_i/\Delta t_i = \lambda_i / \text{CFL}$ from the same spectral radius
+as the explicit step, the CFL starting at `implicit_cfl`, multiplied by
+`implicit_cfl_growth` each iteration up to `implicit_cfl_max`, and
+$\omega$ = `implicit_relax`. An update is kept where it is admissible, as the
+RK update's, and counted as rejected otherwise.
+
+The matrix is a first-order approximation of $\partial R/\partial q$ with
+$6\times 6$ blocks on the node graph, assembled by par loops straight into the
+solver library's storage (`op_arg_mat`):
+
+- each edge: the analytic Euler flux Jacobians of both end states with
+  Rusanov dissipation $\tfrac12\lambda I$, plus a thin-layer viscous
+  $\mu A/(\rho\,d)\max(1,\gamma/\Pr)\, I$, as four blocks;
+- each boundary face: its flux by the face-averaged state, so every pair of
+  its nodes gets $D/n^2$ with
+  $D = \tfrac12(J_\text{int} + J_\text{ghost} G + \lambda(I - G))$, $G$ the
+  ghost state's derivative by the interior one (zero at far field and inlet,
+  a momentum reflection at walls, the pressure-replacing map at outlets);
+  the sparsity takes each face's nodes as well as each edge's;
+- each node: the pseudo-time term and the SA destruction's derivative.
+
+Components the viscous scheme enforces (all at Dirichlet nodes, momentum at
+no-slip nodes) are rows of the identity with a zero right-hand side. The
+system is solved in variables scaled by the free stream
+($\rho, \rho a, \rho a^2, \rho\nu$), which balances the Krylov norms.
+
+The linear solve takes the OP2 implicit proxy's options (`apps/c/implicit`),
+as config keys or `--key value` on the command line:
+
+| option | values | meaning |
+|---|---|---|
+| `solve_config` | file | the solver layer's JSON (`configs/solve.json`); `OP_SOLVE_CONFIG` over it picks the library |
+| `pc` | `lib`, `bjacobi`, `neumann` | the library's preconditioner, or par loops reading the assembled blocks: block Jacobi, or a Neumann series of `terms` steps |
+| `pmat` | `A`, `decoupled` | the library's preconditioner from the matrix, or from each block's diagonal only |
+| `op` | `assembled`, `matfree` | the operator: the matrix, or differences of the full (second-order) residual with the matrix as preconditioner (JFNK) |
+| `jacobian_interval` | N | reassemble every N iterations |
+| `partition` | `kway`, `random`, `inertial` | ParMETIS, OP2's random, or its inertial partitioner |
+| `reorder` | 0, 1 | renumber each rank's mesh after partitioning (`op_renumber`) |
+| `diags`, `timing`, `check` | | OP2's diagnostics, timing output, and a check that fails the run unless L2(rho) falls by `check` |
+
+The solvers are named `nssolver`, `nssolver_bjacobi` and `nssolver_neumann`
+in the JSON, each in every library's own terms. `tests/test_implicit.sh`
+runs the scheme across libraries, variants and these options.
