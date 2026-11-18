@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # The implicit scheme across solver libraries, app variants and the linear
-# solve's options, on the bump at a fixed pseudo-time CFL.
+# solve's options, on the bump with a growing pseudo-time CFL.
 #
 #   BUILD_DIR=build LIBS="petsc hypre" tests/test_implicit.sh
 #
 # Every run must finish with L2(rho) fallen below MAX_RATIO of its first
-# iteration's. Runs of one algorithm must agree to TOL: each library's
+# iteration's. Runs of one algorithm must agree to TOL (round-off grows
+# through the Krylov iterations as the residual falls): each library's
 # single-rank variants with its seq, and its MPI variants (MPI_NP ranks) with
 # its mpi_seq, as the libraries' default preconditioners follow the partition.
 # BUILD_DIR holds the CMake build's nssolver_op2_<variant> binaries; variants
@@ -19,13 +20,14 @@ BUILD_DIR=${BUILD_DIR:-build}
 LIBS=${LIBS:-"petsc hypre"}
 VARIANTS=${VARIANTS:-"seq genseq openmp cuda mpi_seq mpi_openmp mpi_cuda"}
 MPI_NP=${MPI_NP:-2}
-TOL=${TOL:-1e-6}
-MAX_RATIO=${MAX_RATIO:-0.9}
+TOL=${TOL:-1e-2}
+MAX_RATIO=${MAX_RATIO:-0.1}
 OUT=outputs-op2/test_implicit
 mkdir -p "$OUT"
 
-COMMON=(--config configs/bump.cfg --time-scheme implicit --implicit-cfl 5 --iterations 20
-        --progress-interval 20 --solve-config configs/solve.json --timing 0)
+COMMON=(--config configs/bump.cfg --time-scheme implicit --implicit-cfl 10 --implicit-cfl-growth 1.5
+        --implicit-cfl-max 1e5 --iterations 12
+        --progress-interval 12 --solve-config configs/solve.json --timing 0)
 
 declare -A reference
 failures=0
@@ -44,8 +46,8 @@ run() {
     "${launch[@]}" "$bin" "${COMMON[@]}" --output-file "$OUT/$label.h5" "$@" > "$log" 2>&1
   local status=$?
   local final ratio rejected
-  final=$(grep -oE 'iter 20/20 \| L2\(rho\)=[^ ]+' "$log" | sed 's/.*=//')
-  ratio=$(grep -oE 'iter 20/20 .*L2/L2_0=[^ ]+' "$log" | sed 's/.*=//')
+  final=$(grep -oE 'iter 12/12 \| L2\(rho\)=[^ ]+' "$log" | sed 's/.*=//')
+  ratio=$(grep -oE 'iter 12/12 .*L2/L2_0=[^ ]+' "$log" | sed 's/.*=//')
   rejected=$(grep -oE '[0-9]+ rejected node updates' "$log" | cut -d' ' -f1)
   runs=$((runs + 1))
   local verdict=ok

@@ -41,8 +41,9 @@ struct Mesh {
   op_set nodes, edges, bfaces, bnodes;
   op_map edge_to_nodes, bface_to_nodes, bnode_to_node;
   op_dat node_coords, node_volume, node_wall_distance, edge_weights;
-  op_dat bface_normal, bface_area, bface_num_nodes, bface_type;
-  op_dat bnode_dirichlet, bnode_wall, bnode_slip, bnode_normal;
+  op_dat bface_normal, bface_area, bface_num_nodes, bface_type, bface_shares;
+  op_dat bnode_dirichlet, bnode_wall;
+  op_dat node_bc;  // the node's Dirichlet and no-slip entries (constrained_op2)
 };
 
 static void usage(const char *argv0) {
@@ -71,15 +72,12 @@ static void write_residual_history_csv_op2(const std::string &path, const std::v
 
 // --- The residual R(q), which both schemes drive to zero ----------------------
 
-// Keep boundary nodes in a physically admissible state. For viscous runs this
-// imposes no-slip or slip constraints on the nodal conservative state stored
-// on the boundary map.
+// For viscous runs, impose the free stream at Dirichlet nodes and no velocity
+// at no-slip ones on the nodal conservative state.
 static void enforce_boundary(const Mesh &m, op_dat q) {
   op_par_loop(enforce_boundary_node_kernel, "enforce_boundary_node_kernel", m.bnodes,
               op_arg_dat(m.bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
               op_arg_dat(m.bnode_wall, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_dat(m.bnode_slip, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_dat(m.bnode_normal, -1, OP_ID, 3, "double", OP_READ),
               op_arg_dat(q, 0, m.bnode_to_node, NVAR_OP2, "double", OP_RW));
 }
 
@@ -105,8 +103,8 @@ static void gradients(const Mesh &m, bool needed, op_dat prim, op_dat grad) {
               op_arg_dat(grad, 1, m.edge_to_nodes, NGRAD_OP2, "double", OP_INC));
 
   op_par_loop(bface_grad_kernel, "bface_grad_kernel", m.bfaces,
-              op_arg_dat(m.bface_normal, -1, OP_ID, 3, "double", OP_READ),
               op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
+              op_arg_dat(m.bface_shares, -1, OP_ID, 12, "double", OP_READ),
               op_arg_dat(prim, 0, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(prim, 1, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(prim, 2, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
@@ -121,7 +119,8 @@ static void gradients(const Mesh &m, bool needed, op_dat prim, op_dat grad) {
               op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_RW));
 }
 
-// Interior and boundary fluxes, then the SA source, into a cleared residual.
+// Interior and boundary fluxes, then the SA source, into a cleared residual;
+// none in the components the viscous scheme enforces.
 static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res) {
   op_par_loop(zero_var_kernel, "zero_var_kernel", m.nodes,
               op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
@@ -139,13 +138,14 @@ static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res) {
               op_arg_dat(res, 0, m.edge_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_dat(res, 1, m.edge_to_nodes, NVAR_OP2, "double", OP_INC));
 
-  // Physical boundary fluxes from face-averaged interior states and the
-  // boundary-type-specific ghost construction.
+  // Physical boundary fluxes, each node's from its own state and its
+  // boundary-type-specific ghost through its sub-face.
   op_par_loop(boundary_flux_kernel, "boundary_flux_kernel", m.bfaces,
               op_arg_dat(m.bface_type, -1, OP_ID, 1, "int", OP_READ),
               op_arg_dat(m.bface_normal, -1, OP_ID, 3, "double", OP_READ),
               op_arg_dat(m.bface_area, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
+              op_arg_dat(m.bface_shares, -1, OP_ID, 12, "double", OP_READ),
               op_arg_dat(m.node_volume, 0, m.bface_to_nodes, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, 1, m.bface_to_nodes, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, 2, m.bface_to_nodes, 1, "double", OP_READ),
@@ -165,9 +165,14 @@ static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res) {
               op_arg_dat(m.node_wall_distance, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_RW));
+
+  op_par_loop(zero_constrained_kernel, "zero_constrained_kernel", m.nodes,
+              op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
+              op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_RW));
 }
 
-// The local spectral radius, and from it each node's explicit time step.
+// The local spectral radius over each node's whole surface, edges' and
+// boundary sub-faces', and from it each node's explicit time step.
 static void local_time_step(const Mesh &m, op_dat prim, double cfl, op_dat spectral, op_dat dt) {
   op_par_loop(zero_scalar_kernel, "zero_scalar_kernel", m.nodes,
               op_arg_dat(spectral, -1, OP_ID, 1, "double", OP_WRITE));
@@ -180,6 +185,21 @@ static void local_time_step(const Mesh &m, op_dat prim, double cfl, op_dat spect
               op_arg_dat(m.node_volume, 1, m.edge_to_nodes, 1, "double", OP_READ),
               op_arg_dat(spectral, 0, m.edge_to_nodes, 1, "double", OP_INC),
               op_arg_dat(spectral, 1, m.edge_to_nodes, 1, "double", OP_INC));
+  op_par_loop(bface_spectral_kernel, "bface_spectral_kernel", m.bfaces,
+              op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
+              op_arg_dat(m.bface_shares, -1, OP_ID, 12, "double", OP_READ),
+              op_arg_dat(prim, 0, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+              op_arg_dat(prim, 1, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+              op_arg_dat(prim, 2, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+              op_arg_dat(prim, 3, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+              op_arg_dat(m.node_volume, 0, m.bface_to_nodes, 1, "double", OP_READ),
+              op_arg_dat(m.node_volume, 1, m.bface_to_nodes, 1, "double", OP_READ),
+              op_arg_dat(m.node_volume, 2, m.bface_to_nodes, 1, "double", OP_READ),
+              op_arg_dat(m.node_volume, 3, m.bface_to_nodes, 1, "double", OP_READ),
+              op_arg_dat(spectral, 0, m.bface_to_nodes, 1, "double", OP_INC),
+              op_arg_dat(spectral, 1, m.bface_to_nodes, 1, "double", OP_INC),
+              op_arg_dat(spectral, 2, m.bface_to_nodes, 1, "double", OP_INC),
+              op_arg_dat(spectral, 3, m.bface_to_nodes, 1, "double", OP_INC));
   op_par_loop(compute_dt_scaled_kernel, "compute_dt_scaled_kernel", m.nodes,
               op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(spectral, -1, OP_ID, 1, "double", OP_READ),
@@ -210,7 +230,7 @@ static ResidualNorms residual_norms(const Mesh &m, op_dat res) {
 struct Implicit {
   const Mesh *m;
   bool full_gradients;
-  op_dat q, res, spectral, node_bc, bface_jac;
+  op_dat q, res, spectral, bdiag;
   op_dat dinv, y;
   op_dat q_pert, prim_pert, grad_pert, res_pert;
   op_mat A;
@@ -223,11 +243,14 @@ struct Implicit {
 static void assemble_jacobian(Implicit &c, op_mat M, op_dat prim, op_dat grad, int decoupled) {
   const Mesh &m = *c.m;
   op_mat_zero(M);
+  op_par_loop(zero_block_kernel, "zero_block_kernel", m.nodes,
+              op_arg_dat(c.bdiag, -1, OP_ID, NBLOCK_OP2, "double", OP_WRITE));
   op_par_loop(jac_bface_kernel, "jac_bface_kernel", m.bfaces,
               op_arg_dat(m.bface_type, -1, OP_ID, 1, "int", OP_READ),
               op_arg_dat(m.bface_normal, -1, OP_ID, 3, "double", OP_READ),
               op_arg_dat(m.bface_area, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
+              op_arg_dat(m.bface_shares, -1, OP_ID, 12, "double", OP_READ),
               op_arg_dat(m.node_volume, 0, m.bface_to_nodes, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, 1, m.bface_to_nodes, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, 2, m.bface_to_nodes, 1, "double", OP_READ),
@@ -236,65 +259,27 @@ static void assemble_jacobian(Implicit &c, op_mat M, op_dat prim, op_dat grad, i
               op_arg_dat(prim, 1, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(prim, 2, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(prim, 3, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
-              op_arg_gbl(&decoupled, 1, "int", OP_READ),
-              op_arg_dat(c.bface_jac, -1, OP_ID, NBLOCK_OP2, "double", OP_WRITE));
-  // A row of each face's blocks per loop, as loops take at most 20 arguments.
-  int row = 0;
-  op_par_loop(jac_bface_row_kernel, "jac_bface_row_kernel", m.bfaces,
-              op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_gbl(&row, 1, "int", OP_READ),
-              op_arg_dat(c.bface_jac, -1, OP_ID, NBLOCK_OP2, "double", OP_READ),
-              op_arg_dat(c.node_bc, 0, m.bface_to_nodes, 2, "int", OP_READ),
-              op_arg_mat(M, 0, m.bface_to_nodes, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 0, m.bface_to_nodes, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 0, m.bface_to_nodes, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 0, m.bface_to_nodes, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
-  row = 1;
-  op_par_loop(jac_bface_row_kernel, "jac_bface_row_kernel", m.bfaces,
-              op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_gbl(&row, 1, "int", OP_READ),
-              op_arg_dat(c.bface_jac, -1, OP_ID, NBLOCK_OP2, "double", OP_READ),
-              op_arg_dat(c.node_bc, 1, m.bface_to_nodes, 2, "int", OP_READ),
-              op_arg_mat(M, 1, m.bface_to_nodes, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 1, m.bface_to_nodes, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 1, m.bface_to_nodes, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 1, m.bface_to_nodes, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
-  row = 2;
-  op_par_loop(jac_bface_row_kernel, "jac_bface_row_kernel", m.bfaces,
-              op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_gbl(&row, 1, "int", OP_READ),
-              op_arg_dat(c.bface_jac, -1, OP_ID, NBLOCK_OP2, "double", OP_READ),
-              op_arg_dat(c.node_bc, 2, m.bface_to_nodes, 2, "int", OP_READ),
-              op_arg_mat(M, 2, m.bface_to_nodes, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 2, m.bface_to_nodes, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 2, m.bface_to_nodes, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 2, m.bface_to_nodes, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
-  row = 3;
-  op_par_loop(jac_bface_row_kernel, "jac_bface_row_kernel", m.bfaces,
-              op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_gbl(&row, 1, "int", OP_READ),
-              op_arg_dat(c.bface_jac, -1, OP_ID, NBLOCK_OP2, "double", OP_READ),
-              op_arg_dat(c.node_bc, 3, m.bface_to_nodes, 2, "int", OP_READ),
-              op_arg_mat(M, 3, m.bface_to_nodes, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 3, m.bface_to_nodes, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 3, m.bface_to_nodes, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_mat(M, 3, m.bface_to_nodes, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
+              op_arg_dat(c.bdiag, 0, m.bface_to_nodes, NBLOCK_OP2, "double", OP_INC),
+              op_arg_dat(c.bdiag, 1, m.bface_to_nodes, NBLOCK_OP2, "double", OP_INC),
+              op_arg_dat(c.bdiag, 2, m.bface_to_nodes, NBLOCK_OP2, "double", OP_INC),
+              op_arg_dat(c.bdiag, 3, m.bface_to_nodes, NBLOCK_OP2, "double", OP_INC));
   op_par_loop(jac_edge_kernel, "jac_edge_kernel", m.edges,
               op_arg_dat(m.node_coords, 0, m.edge_to_nodes, 3, "double", OP_READ),
               op_arg_dat(m.node_coords, 1, m.edge_to_nodes, 3, "double", OP_READ),
               op_arg_dat(prim, 0, m.edge_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(prim, 1, m.edge_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(m.edge_weights, -1, OP_ID, 3, "double", OP_READ),
-              op_arg_dat(c.node_bc, 0, m.edge_to_nodes, 2, "int", OP_READ),
-              op_arg_dat(c.node_bc, 1, m.edge_to_nodes, 2, "int", OP_READ),
+              op_arg_dat(m.node_bc, 0, m.edge_to_nodes, 2, "int", OP_READ),
+              op_arg_dat(m.node_bc, 1, m.edge_to_nodes, 2, "int", OP_READ),
               op_arg_gbl(&decoupled, 1, "int", OP_READ),
               op_arg_mat(M, 0, m.edge_to_nodes, 0, m.edge_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_mat(M, 0, m.edge_to_nodes, 1, m.edge_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_mat(M, 1, m.edge_to_nodes, 0, m.edge_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_mat(M, 1, m.edge_to_nodes, 1, m.edge_to_nodes, NVAR_OP2, "double", OP_INC));
   op_par_loop(jac_node_kernel, "jac_node_kernel", m.nodes,
-              op_arg_dat(c.node_bc, -1, OP_ID, 2, "int", OP_READ),
+              op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
               op_arg_dat(c.spectral, -1, OP_ID, 1, "double", OP_READ),
+              op_arg_dat(c.bdiag, -1, OP_ID, NBLOCK_OP2, "double", OP_READ),
               op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_READ),
               op_arg_dat(m.node_wall_distance, -1, OP_ID, 1, "double", OP_READ),
@@ -327,20 +312,6 @@ static void matvec(Implicit *c, op_dat x, op_dat y) {
               op_arg_dat(x, 1, m.edge_to_nodes, NVAR_OP2, "double", OP_READ),
               op_arg_dat(y, 0, m.edge_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_dat(y, 1, m.edge_to_nodes, NVAR_OP2, "double", OP_INC));
-  op_par_loop(mat_face_kernel, "mat_face_kernel", m.bfaces,
-              op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
-              op_arg_mat(c->A, 0, m.bface_to_nodes, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_mat(c->A, 2, m.bface_to_nodes, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_mat(c->A, 1, m.bface_to_nodes, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_mat(c->A, 3, m.bface_to_nodes, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_dat(x, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_dat(x, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_dat(x, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_dat(x, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_READ),
-              op_arg_dat(y, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_dat(y, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_dat(y, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
-              op_arg_dat(y, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
 }
 
 // z = sum_{i<=m} (I - Dinv A)^i Dinv r: block Jacobi, then m steps that each
@@ -383,7 +354,7 @@ static void matfree(op_dat x, op_dat y, void *ctx) {
   gradients(m, c->full_gradients, c->prim_pert, c->grad_pert);
   flux_residual(m, c->prim_pert, c->grad_pert, c->res_pert);
   op_par_loop(matfree_combine_kernel, "matfree_combine_kernel", m.nodes,
-              op_arg_dat(c->node_bc, -1, OP_ID, 2, "int", OP_READ),
+              op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
               op_arg_dat(c->spectral, -1, OP_ID, 1, "double", OP_READ),
               op_arg_gbl(&c->cfl, 1, "double", OP_READ),
               op_arg_gbl(&eps, 1, "double", OP_READ),
@@ -493,12 +464,11 @@ int main(int argc, char **argv) {
     m.bface_area = op_decl_dat_hdf5(m.bfaces, 1, "double", mesh_file, "bface_area");
     m.bface_num_nodes = op_decl_dat_hdf5(m.bfaces, 1, "int", mesh_file, "bface_num_nodes");
     m.bface_type = op_decl_dat_hdf5(m.bfaces, 1, "int", mesh_file, "bface_type");
+    m.bface_shares = op_decl_dat_hdf5(m.bfaces, 12, "double", mesh_file, "bface_node_normals");
     op_dat bface_group = op_decl_dat_hdf5(m.bfaces, 1, "int", mesh_file, "bface_group");
     (void)bface_group;
     m.bnode_dirichlet = op_decl_dat_hdf5(m.bnodes, 1, "int", mesh_file, "bnode_dirichlet");
     m.bnode_wall = op_decl_dat_hdf5(m.bnodes, 1, "int", mesh_file, "bnode_wall");
-    m.bnode_slip = op_decl_dat_hdf5(m.bnodes, 1, "int", mesh_file, "bnode_slip");
-    m.bnode_normal = op_decl_dat_hdf5(m.bnodes, 3, "double", mesh_file, "bnode_normal");
 
     if (cfg.partition == "random")
       op_partition("RANDOM", NULL, m.nodes, NULL, NULL);
@@ -520,6 +490,15 @@ int main(int argc, char **argv) {
     op_dat grad = op_decl_dat_temp_char(m.nodes, NGRAD_OP2, "double", sizeof(double), "grad");
     const bool full_gradients = cfg.second_order || cfg.include_sa;
 
+    // Which components each node's boundary entries fix.
+    m.node_bc = op_decl_dat_temp_char(m.nodes, 2, "int", sizeof(int), "node_bc");
+    op_par_loop(zero_node_bc_kernel, "zero_node_bc_kernel", m.nodes,
+                op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_WRITE));
+    op_par_loop(node_bc_kernel, "node_bc_kernel", m.bnodes,
+                op_arg_dat(m.bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(m.bnode_wall, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(m.node_bc, 0, m.bnode_to_node, 2, "int", OP_INC));
+
     // The implicit scheme's matrices, solver and work dats.
     Implicit imp{};
     op_mat P = NULL;
@@ -535,8 +514,7 @@ int main(int argc, char **argv) {
       imp.spectral = spectral;
       imp.terms = cfg.terms;
       imp.cfl = cfg.implicit_cfl;
-      imp.node_bc = op_decl_dat_temp_char(m.nodes, 2, "int", sizeof(int), "node_bc");
-      imp.bface_jac = op_decl_dat_temp_char(m.bfaces, NBLOCK_OP2, "double", sizeof(double), "bface_jac");
+      imp.bdiag = op_decl_dat_temp_char(m.nodes, NBLOCK_OP2, "double", sizeof(double), "bdiag");
       rhs = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "rhs");
       dq = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "dq");
       if (cfg.pc != "lib")
@@ -550,17 +528,7 @@ int main(int argc, char **argv) {
         imp.res_pert = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "res_pert");
       }
 
-      // Which components each node's boundary entries fix.
-      op_par_loop(zero_node_bc_kernel, "zero_node_bc_kernel", m.nodes,
-                  op_arg_dat(imp.node_bc, -1, OP_ID, 2, "int", OP_WRITE));
-      op_par_loop(node_bc_kernel, "node_bc_kernel", m.bnodes,
-                  op_arg_dat(m.bnode_dirichlet, -1, OP_ID, 1, "int", OP_READ),
-                  op_arg_dat(m.bnode_wall, -1, OP_ID, 1, "int", OP_READ),
-                  op_arg_dat(imp.node_bc, 0, m.bnode_to_node, 2, "int", OP_INC));
-
-      // Each edge's nodes, and each boundary face's.
-      op_map pairs[2] = {m.edge_to_nodes, m.bface_to_nodes};
-      op_sparsity sp = op_decl_sparsity(m.nodes, m.nodes, 2, pairs, pairs, "jacobian");
+      op_sparsity sp = op_decl_sparsity(m.nodes, m.nodes, 1, &m.edge_to_nodes, &m.edge_to_nodes, "jacobian");
       imp.A = op_decl_mat(sp, NVAR_OP2, "double", "A");
       if (cfg.pmat == "decoupled") P = op_decl_mat(sp, NVAR_OP2, "double", "P");
       solver = op_decl_solver(imp.A, (cfg.pc == "lib" ? std::string("nssolver") : "nssolver_" + cfg.pc).c_str());
@@ -662,7 +630,7 @@ int main(int argc, char **argv) {
         }
 
         op_par_loop(implicit_rhs_kernel, "implicit_rhs_kernel", m.nodes,
-                    op_arg_dat(imp.node_bc, -1, OP_ID, 2, "int", OP_READ),
+                    op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
                     op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                     op_arg_dat(rhs, -1, OP_ID, NVAR_OP2, "double", OP_WRITE),
                     op_arg_dat(dq, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));

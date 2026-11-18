@@ -189,8 +189,9 @@ The OP2 kernels now use a guarded HLLC flux path:
 - pure supersonic left/right states return the corresponding physical flux
 - near-singular HLLC denominators fall back to HLL
 - non-finite or out-of-wavefan contact speeds fall back to HLL
-- near-zero contact speeds use HLL to avoid optimization-sensitive branch
-  amplification around symmetric states
+- near-zero contact speeds blend the star-left and star-right fluxes
+  linearly, which keeps the branch insensitive to round-off around symmetric
+  states without the jump an HLL switch put into the residual
 - invalid HLL denominators fall back to Rusanov flux
 
 The RK update also normalizes tiny conserved quantities after each stage:

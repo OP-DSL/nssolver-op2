@@ -35,7 +35,7 @@ The test checks:
 
 - `box` preserves the uniform state to near roundoff
 - `bump` reaches the stabilized OP2 final `L2(rho)` band:
-  `4.9e-03 <= L2(rho) <= 5.1e-03`
+  `6.9e-04 <= L2(rho) <= 7.1e-04`
 
 ### 2. OP2 regression check
 
@@ -54,7 +54,7 @@ Expected behavior:
 
 - `box`: final residual remains near machine zero
 - `bump`: OP2 final `L2(rho)` remains in
-  `4.9e-03 <= L2(rho) <= 5.1e-03`
+  `6.9e-04 <= L2(rho) <= 7.1e-04`
 
 ### 3. Flat-plate viscous benchmark
 
@@ -71,7 +71,7 @@ This runs OP2 on `flatplate_develop`, checks the final residual band, and postpr
 Current expected status:
 
 - final OP2 `L2(rho)`:
-  `2.3e-03 <= L2(rho) <= 2.4e-03`
+  `4.0e-08 <= L2(rho) <= 4.15e-08`
 - wall/profile CSV files are generated and non-empty
 
 The script should pass when the OP2 implementation remains within the validated residual band and produces usable benchmark outputs.
@@ -127,7 +127,17 @@ bash scripts/hdf5_to_vtk.sh meshes-op2/box.h5 outputs-op2/box_solution.h5 output
 The helper scripts currently use pragmatic engineering thresholds:
 
 - `box` final `L2(rho)` must remain near zero
-- OP2 bump final `L2(rho)` target is about `4.99452e-03`
-- flat-plate final `L2(rho)` target is about `2.34059e-03`
+- OP2 bump final `L2(rho)` target is about `6.97872e-04`
+- flat-plate final `L2(rho)` target is about `4.07403e-08`
 
 These thresholds should only be tightened after solver changes are validated over multiple runs.
+
+The targets are residual levels after the configs' fixed iteration counts,
+not converged states. They moved when the control volumes were closed
+(median-dual edges, per-node boundary sub-faces and fluxes) and the
+components the viscous scheme enforces stopped carrying a residual: the
+flat plate's `L2(rho)` is now that of its free nodes only. Both cases now
+reach a steady state: RK4 keeps reducing the residual (bump: `5.6e-06` after
+30000 iterations, where the earlier numerics diverged), and the implicit
+scheme (`--time-scheme implicit`, `OP2_SOLVER.md` section 17) converges both
+to round-off in 20-35 iterations.

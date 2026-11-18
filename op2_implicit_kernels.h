@@ -4,81 +4,39 @@
 // each iteration solves (V / dt + dR/dq) dq = -R for the update, R the
 // residual the explicit scheme marches with, through OP2's solver layer.
 //
-// The matrix is a first-order approximation of dR/dq: each edge's analytic
-// Euler flux Jacobians with Rusanov dissipation (and a thin-layer viscous
-// one), each boundary face's lumped onto the diagonal blocks of its nodes, and
-// the SA destruction term. Nodes whose state the viscous scheme enforces keep
-// those components: their rows are the identity and their right-hand side 0.
+// The matrix is dR/dq of the first-order residual: each edge's flux (HLLC
+// and thin-layer viscous) and each boundary sub-face's, differentiated by
+// one-sided differences of the same flux functions, and the SA destruction
+// term. Nodes whose state the viscous scheme enforces keep those components:
+// their rows are the identity and their right-hand side 0.
 //
 // The conservative variables span five orders of magnitude, so the system is
 // solved in scaled ones: S^-1 A S x = S^-1 b with dq = S x, S the reference
-// state op2_scale, which balances Krylov norms and the matrix-free operator's
-// differences.
+// state op2_scale, which balances Krylov norms and the differences.
 
 static constexpr int NBLOCK_OP2 = NVAR_OP2 * NVAR_OP2;
 
 extern double op2_scale[6];
 
-// d(f . S)/dq: the inviscid flux through area vector S by the conservative
-// state, at primitive state p.
-inline void flux_jacobian_op2(const double *p, const double *S, double *J) {
-  const double g1 = op2_gamma - 1.0;
-  const double vel[3] = {p[1], p[2], p[3]};
-  const double v2 = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
-  const double vn = vel[0] * S[0] + vel[1] * S[1] + vel[2] * S[2];
-  const double phi = 0.5 * g1 * v2;
-  const double h = op2_gamma * p[4] / (g1 * p[0]) + 0.5 * v2;
-  for (int k = 0; k < NBLOCK_OP2; ++k) J[k] = 0.0;
-  for (int b = 0; b < 3; ++b) J[1 + b] = S[b];
-  for (int a = 0; a < 3; ++a) {
-    double *row = J + (1 + a) * NVAR_OP2;
-    row[0] = phi * S[a] - vel[a] * vn;
-    for (int b = 0; b < 3; ++b) row[1 + b] = vel[a] * S[b] - g1 * vel[b] * S[a] + (a == b ? vn : 0.0);
-    row[4] = g1 * S[a];
+// The step of the one-sided differences in component c of the state q.
+inline double jacobian_step_op2(const double *q, int c) {
+  return 1.0e-7 * fmax(fabs(q[c]), op2_scale[c]);
+}
+
+// An edge's first-order flux from primitive states pl to pr through area
+// vector S: HLLC less the thin-layer viscous flux over delta.
+inline void edge_flux_first_order_op2(const double *pl, const double *pr, const double *delta, const double *S,
+                                      double *flux) {
+  double ql[NVAR_OP2];
+  double qr[NVAR_OP2];
+  primitive_to_conservative_op2(pl, ql);
+  primitive_to_conservative_op2(pr, qr);
+  hllc_flux_op2(pl, ql, pr, qr, S, flux);
+  if (op2_include_viscous) {
+    double viscous[NVAR_OP2];
+    thin_layer_viscous_flux_op2(pl, pr, delta, S, viscous);
+    for (int m = 0; m < NVAR_OP2; ++m) flux[m] -= viscous[m];
   }
-  double *energy = J + 4 * NVAR_OP2;
-  energy[0] = vn * (phi - h);
-  for (int b = 0; b < 3; ++b) energy[1 + b] = h * S[b] - g1 * vel[b] * vn;
-  energy[4] = op2_gamma * vn;
-  double *turb = J + 5 * NVAR_OP2;
-  turb[0] = -p[5] * vn;
-  for (int b = 0; b < 3; ++b) turb[1 + b] = p[5] * S[b];
-  turb[5] = vn;
-}
-
-// The largest wave speed through area vector S at either state, times its area.
-inline double wave_speed_op2(const double *pl, const double *pr, const double *S, double area) {
-  const double n[3] = {S[0] / area, S[1] / area, S[2] / area};
-  return area * fmax(fabs(normal_velocity_op2(pl, n)) + speed_of_sound_op2(pl),
-                     fabs(normal_velocity_op2(pr, n)) + speed_of_sound_op2(pr));
-}
-
-// The thin-layer viscous flux's derivative, as a scalar times the identity.
-inline double viscous_coefficient_op2(const double *pl, const double *pr, double area, double distance) {
-  const double t_l = pl[4] / (pl[0] * op2_gas_constant);
-  const double t_r = pr[4] / (pr[0] * op2_gas_constant);
-  const double mu = 0.5 * (dynamic_viscosity_op2(t_l) + dynamic_viscosity_op2(t_r)) +
-                    0.5 * (eddy_viscosity_op2(pl) + eddy_viscosity_op2(pr));
-  const double rho = 0.5 * (pl[0] + pr[0]);
-  return fmax(1.0, op2_gamma / op2_prandtl) * mu * area / (rho * fmax(distance, 1.0e-14));
-}
-
-// Whether the viscous scheme enforces component m at a node: bc counts the
-// node's Dirichlet and no-slip boundary entries (node_bc_kernel).
-inline bool constrained_op2(const int *bc, int m) {
-  if (!op2_include_viscous) return false;
-  if (bc[0] > 0) return true;
-  return bc[1] > 0 && m >= 1 && m <= 3;
-}
-
-inline void zero_node_bc_kernel(int *bc) {
-  bc[0] = 0;
-  bc[1] = 0;
-}
-
-inline void node_bc_kernel(const int *is_dirichlet, const int *is_wall, int *bc) {
-  bc[0] += is_dirichlet[0] ? 1 : 0;
-  bc[1] += is_wall[0] ? 1 : 0;
 }
 
 // An edge's four blocks: its flux F leaves l and enters r, so row l takes
@@ -86,17 +44,41 @@ inline void node_bc_kernel(const int *is_dirichlet, const int *is_wall, int *bc)
 inline void jac_edge_kernel(const double *coord_l, const double *coord_r, const double *prim_l, const double *prim_r,
                             const double *edge_weight, const int *bc_l, const int *bc_r, const int *decoupled,
                             double *A_ll, double *A_lr, double *A_rl, double *A_rr) {
-  const double area = vec_norm3(edge_weight);
-  if (area <= 1.0e-300) return;
-  double dissipation = 0.5 * wave_speed_op2(prim_l, prim_r, edge_weight, area);
-  if (op2_include_viscous) {
-    const double delta[3] = {coord_r[0] - coord_l[0], coord_r[1] - coord_l[1], coord_r[2] - coord_l[2]};
-    dissipation += viscous_coefficient_op2(prim_l, prim_r, area, vec_norm3(delta));
+  if (vec_norm3(edge_weight) <= 1.0e-300) return;
+  const double S[3] = {edge_weight[0], edge_weight[1], edge_weight[2]};
+  const double delta[3] = {coord_r[0] - coord_l[0], coord_r[1] - coord_l[1], coord_r[2] - coord_l[2]};
+  double pl[NPRIM_OP2];
+  double pr[NPRIM_OP2];
+  for (int m = 0; m < NPRIM_OP2; ++m) {
+    pl[m] = prim_l[m];
+    pr[m] = prim_r[m];
   }
-  double J_l[NBLOCK_OP2];
-  double J_r[NBLOCK_OP2];
-  flux_jacobian_op2(prim_l, edge_weight, J_l);
-  flux_jacobian_op2(prim_r, edge_weight, J_r);
+  double ql[NVAR_OP2];
+  double qr[NVAR_OP2];
+  primitive_to_conservative_op2(pl, ql);
+  primitive_to_conservative_op2(pr, qr);
+  double flux[NVAR_OP2];
+  edge_flux_first_order_op2(pl, pr, delta, S, flux);
+
+  // dF/dq_l and dF/dq_r, column c by column.
+  double D_l[NBLOCK_OP2];
+  double D_r[NBLOCK_OP2];
+  for (int c = 0; c < NVAR_OP2; ++c) {
+    double q[NVAR_OP2];
+    double p[NPRIM_OP2];
+    double perturbed[NVAR_OP2];
+    const double h_l = jacobian_step_op2(ql, c);
+    for (int m = 0; m < NVAR_OP2; ++m) q[m] = ql[m] + (m == c ? h_l : 0.0);
+    conservative_to_primitive_op2(q, p);
+    edge_flux_first_order_op2(p, pr, delta, S, perturbed);
+    for (int r = 0; r < NVAR_OP2; ++r) D_l[r * NVAR_OP2 + c] = (perturbed[r] - flux[r]) / h_l;
+    const double h_r = jacobian_step_op2(qr, c);
+    for (int m = 0; m < NVAR_OP2; ++m) q[m] = qr[m] + (m == c ? h_r : 0.0);
+    conservative_to_primitive_op2(q, p);
+    edge_flux_first_order_op2(pl, p, delta, S, perturbed);
+    for (int r = 0; r < NVAR_OP2; ++r) D_r[r * NVAR_OP2 + c] = (perturbed[r] - flux[r]) / h_r;
+  }
+
   for (int r = 0; r < NVAR_OP2; ++r) {
     const bool keep_l = !constrained_op2(bc_l, r);
     const bool keep_r = !constrained_op2(bc_r, r);
@@ -104,8 +86,8 @@ inline void jac_edge_kernel(const double *coord_l, const double *coord_r, const 
       if (decoupled[0] && r != c) continue;
       const int k = r * NVAR_OP2 + c;
       const double scale = op2_scale[c] / op2_scale[r];
-      const double d_l = scale * (0.5 * J_l[k] + (r == c ? dissipation : 0.0));
-      const double d_r = scale * (0.5 * J_r[k] - (r == c ? dissipation : 0.0));
+      const double d_l = scale * D_l[k];
+      const double d_r = scale * D_r[k];
       if (keep_l) {
         A_ll[k] += d_l;
         A_lr[k] += d_r;
@@ -118,111 +100,59 @@ inline void jac_edge_kernel(const double *coord_l, const double *coord_r, const 
   }
 }
 
-// A boundary face's flux F by its face-averaged interior state, of which each
-// of its n nodes takes F / n, so the block of its nodes (j, k) is D / n^2:
-// D = dF/dq_int = (J_int + J_ghost G + lambda (I - G)) / 2 with G the ghost
-// state's derivative by the interior one, scaled. jac_bface_row_kernel adds
-// the blocks, a row of nodes at a time.
+// Each node's boundary flux depends on its own state alone, so a boundary
+// face adds to its nodes' diagonal blocks only, through bdiag: the
+// derivative of boundary_node_flux_op2 by the node's state.
 inline void jac_bface_kernel(const int *btype, const double *normal, const double *area, const int *num_nodes,
-                             const double *vol1, const double *vol2, const double *vol3, const double *vol4,
-                             const double *prim1, const double *prim2, const double *prim3, const double *prim4,
-                             const int *decoupled, double *D) {
-  const int nodes = num_nodes[0] > 1 ? num_nodes[0] : 1;
-  const double inv_nodes = 1.0 / nodes;
-  double p_int[NPRIM_OP2];
-  for (int m = 0; m < NPRIM_OP2; ++m)
-    p_int[m] = inv_nodes * (prim1[m] + prim2[m] + prim3[m] + (nodes == 4 ? prim4[m] : 0.0));
-
+                             const double *shares, const double *vol1, const double *vol2, const double *vol3,
+                             const double *vol4, const double *prim1, const double *prim2, const double *prim3,
+                             const double *prim4, double *b1, double *b2, double *b3, double *b4) {
+  const int nodes = num_nodes[0] == 4 ? 4 : 3;
   const double amag = fmax(area[0], 1.0e-14);
   const double unit_normal[3] = {normal[0] / amag, normal[1] / amag, normal[2] / amag};
-  double p_ghost[NPRIM_OP2];
-  make_boundary_ghost_state_op2(p_int, unit_normal, btype[0], p_ghost);
-
-  double G[NBLOCK_OP2];
-  for (int k = 0; k < NBLOCK_OP2; ++k) G[k] = 0.0;
-  const bool backflow = op2_outlet_backflow && normal_velocity_op2(p_int, unit_normal) < 0.0;
-  if (btype[0] == BTYPE_OUTLET && !backflow) {
-    // The ghost keeps rho, u and nu_tilde, and takes the far-field pressure.
-    for (int m = 0; m < NVAR_OP2; ++m)
-      if (m != 4) G[m * NVAR_OP2 + m] = 1.0;
-    const double *u = p_int + 1;
-    G[4 * NVAR_OP2 + 0] = -0.5 * (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
-    for (int b = 0; b < 3; ++b) G[4 * NVAR_OP2 + 1 + b] = u[b];
-  } else if (btype[0] == BTYPE_SLIPWALL || btype[0] == BTYPE_NOSLIPWALL) {
-    // The ghost reflects the momentum through the wall.
-    for (int m = 0; m < NVAR_OP2; ++m) G[m * NVAR_OP2 + m] = 1.0;
-    for (int a = 0; a < 3; ++a)
-      for (int b = 0; b < 3; ++b) G[(1 + a) * NVAR_OP2 + 1 + b] -= 2.0 * unit_normal[a] * unit_normal[b];
-    if (btype[0] == BTYPE_NOSLIPWALL) G[5 * NVAR_OP2 + 5] = -1.0;
-  }
-
-  double J_int[NBLOCK_OP2];
-  double J_ghost[NBLOCK_OP2];
-  flux_jacobian_op2(p_int, normal, J_int);
-  flux_jacobian_op2(p_ghost, normal, J_ghost);
-  const double lambda = wave_speed_op2(p_int, p_ghost, normal, amag);
-  double viscous = 0.0;
-  if (op2_include_viscous && btype[0] == BTYPE_NOSLIPWALL) {
-    const double volume_sum = vol1[0] + vol2[0] + vol3[0] + (nodes == 4 ? vol4[0] : 0.0);
-    const double distance = fmax(volume_sum / ((double)nodes * amag), 1.0e-12);
-    viscous = viscous_coefficient_op2(p_int, p_int, amag, distance);
-  }
-
-  for (int r = 0; r < NVAR_OP2; ++r)
+  double D[4][NBLOCK_OP2];
+  for (int j = 0; j < 4; ++j)
+    for (int k = 0; k < NBLOCK_OP2; ++k) D[j][k] = 0.0;
+  for (int j = 0; j < nodes; ++j) {
+    double p[NPRIM_OP2];
+    for (int m = 0; m < NPRIM_OP2; ++m)
+      p[m] = j == 0 ? prim1[m] : j == 1 ? prim2[m] : j == 2 ? prim3[m] : prim4[m];
+    const double vol = j == 0 ? vol1[0] : j == 1 ? vol2[0] : j == 2 ? vol3[0] : vol4[0];
+    const double S[3] = {shares[3 * j], shares[3 * j + 1], shares[3 * j + 2]};
+    const double distance = fmax(vol / (nodes * fmax(vec_norm3(S), 1.0e-300)), 1.0e-12);
+    double q0[NVAR_OP2];
+    primitive_to_conservative_op2(p, q0);
+    double flux[NVAR_OP2];
+    boundary_node_flux_op2(p, S, unit_normal, btype[0], distance, flux);
     for (int c = 0; c < NVAR_OP2; ++c) {
-      const int k = r * NVAR_OP2 + c;
-      double ghost = 0.0;
-      for (int j = 0; j < NVAR_OP2; ++j) ghost += J_ghost[r * NVAR_OP2 + j] * G[j * NVAR_OP2 + c];
-      double d = 0.5 * (J_int[k] + ghost + lambda * ((r == c ? 1.0 : 0.0) - G[k]));
-      if (r == c && r >= 1 && r <= 4) d += viscous;
-      D[k] = decoupled[0] && r != c ? 0.0 : d * inv_nodes * inv_nodes * op2_scale[c] / op2_scale[r];
+      double q[NVAR_OP2];
+      double pp[NPRIM_OP2];
+      double perturbed[NVAR_OP2];
+      const double h = jacobian_step_op2(q0, c);
+      for (int m = 0; m < NVAR_OP2; ++m) q[m] = q0[m] + (m == c ? h : 0.0);
+      conservative_to_primitive_op2(q, pp);
+      boundary_node_flux_op2(pp, S, unit_normal, btype[0], distance, perturbed);
+      for (int r = 0; r < NVAR_OP2; ++r) D[j][r * NVAR_OP2 + c] = (perturbed[r] - flux[r]) / h;
     }
-}
-
-// Node `row` of a boundary face: its blocks with each node of the face.
-inline void jac_bface_row_kernel(const int *num_nodes, const int *row, const double *D, const int *bc, double *A0,
-                                 double *A1, double *A2, double *A3) {
-  if (row[0] >= num_nodes[0]) return;
-  for (int r = 0; r < NVAR_OP2; ++r) {
-    if (constrained_op2(bc, r)) continue;
-    for (int c = 0; c < NVAR_OP2; ++c) {
-      const int k = r * NVAR_OP2 + c;
-      A0[k] += D[k];
-      A1[k] += D[k];
-      A2[k] += D[k];
-      if (num_nodes[0] == 4) A3[k] += D[k];
-    }
+  }
+  for (int k = 0; k < NBLOCK_OP2; ++k) {
+    b1[k] += D[0][k];
+    b2[k] += D[1][k];
+    b3[k] += D[2][k];
+    if (nodes == 4) b4[k] += D[3][k];
   }
 }
 
-// y += A x through a quad face's diagonals (nodes 0-2 and 1-3), the blocks no
-// edge reaches; mat_diag_kernel and mat_edge_kernel take the rest.
-inline void mat_face_kernel(const int *num_nodes, const double *A02, const double *A20, const double *A13,
-                            const double *A31, const double *x0, const double *x1, const double *x2,
-                            const double *x3, double *y0, double *y1, double *y2, double *y3) {
-  if (num_nodes[0] != 4) return;
-  for (int r = 0; r < NVAR_OP2; ++r) {
-    double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
-    for (int c = 0; c < NVAR_OP2; ++c) {
-      const int k = r * NVAR_OP2 + c;
-      s0 += A02[k] * x2[c];
-      s2 += A20[k] * x0[c];
-      s1 += A13[k] * x3[c];
-      s3 += A31[k] * x1[c];
-    }
-    y0[r] += s0;
-    y1[r] += s1;
-    y2[r] += s2;
-    y3[r] += s3;
-  }
+inline void zero_block_kernel(double *block) {
+  for (int k = 0; k < NBLOCK_OP2; ++k) block[k] = 0.0;
 }
 
 // A node's diagonal block: V / dt from the pseudo-time step (spectral / CFL,
-// as the explicit step's dt = CFL V / spectral) and the SA destruction's
-// derivative; constrained rows the identity.
-inline void jac_node_kernel(const int *bc, const double *spectral, const double *prim, const double *grad,
-                            const double *wall_dist, const double *volume, const double *cfl, const int *decoupled,
-                            double *A) {
+// as the explicit step's dt = CFL V / spectral), its boundary faces' blocks
+// (bdiag) and the SA destruction's derivative; constrained rows the identity.
+inline void jac_node_kernel(const int *bc, const double *spectral, const double *bdiag, const double *prim,
+                            const double *grad, const double *wall_dist, const double *volume, const double *cfl,
+                            const int *decoupled, double *A) {
   const double time = spectral[0] / cfl[0];
   double sa = 0.0;
   double production, destruction;
@@ -237,7 +167,7 @@ inline void jac_node_kernel(const int *bc, const double *spectral, const double 
         if (r == c) A[k] += 1.0;
         continue;
       }
-      A[k] += (r == c ? time : 0.0) + (r == 5 && c == 5 ? sa : 0.0);
+      A[k] += bdiag[k] * op2_scale[c] / op2_scale[r] + (r == c ? time : 0.0) + (r == 5 && c == 5 ? sa : 0.0);
     }
   }
 }

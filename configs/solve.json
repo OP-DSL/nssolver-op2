@@ -2,6 +2,7 @@
   "solvers": {
     "nssolver": {
       "petsc": {"ksp_type": "gmres", "ksp_gmres_restart": 30, "ksp_rtol": 1e-3, "ksp_max_it": 100,
+                "ksp_pc_side": "right",
                 "pc_type": "bjacobi"},
       "hypre": {"solver": "GMRES", "KDim": 30, "Tol": 1e-3, "MaxIter": 100, "precond": "ILU"},
       "ginkgo": {"type": "solver::Gmres", "krylov_dim": 30,
@@ -16,7 +17,8 @@
       "mock": {"solver": "cg", "rtol": 1e-3, "maxit": 100, "preconditioner": "jacobi"}
     },
     "nssolver_bjacobi": {
-      "petsc": {"ksp_type": "gmres", "ksp_gmres_restart": 30, "ksp_rtol": 1e-3, "ksp_max_it": 100},
+      "petsc": {"ksp_type": "gmres", "ksp_gmres_restart": 30, "ksp_rtol": 1e-3, "ksp_max_it": 100,
+                "ksp_pc_side": "right"},
       "hypre": {"solver": "GMRES", "KDim": 30, "Tol": 1e-3, "MaxIter": 100},
       "ginkgo": {"type": "solver::Gmres", "krylov_dim": 30,
                  "criteria": {"iteration": 100, "relative_residual_norm": 1e-3}},
