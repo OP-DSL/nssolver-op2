@@ -12,8 +12,9 @@ The current OP2 implementation supports:
 - HLLC inviscid fluxes
 - Green-Gauss primitive gradients
 - edge-local second-order MUSCL reconstruction
-- thin-layer viscous fluxes
+- full Navier-Stokes viscous fluxes (edge-corrected averaged gradients)
 - explicit four-stage Runge-Kutta marching with local time stepping
+- implicit pseudo-time stepping, and dual time stepping for unsteady flow
 - Spalart-Allmaras source-term update
 - Hydra-derived HDF5 meshes after preprocessing
 
@@ -217,8 +218,13 @@ The scalar limiter contribution is
 and the node-edge limiter is
 
 \[
-\phi_i = \min_m \phi_{i,m}.
+\phi_i = \min_m \phi_{i,m}
 \]
+
+over the mean-flow components: \(\tilde\nu\) is advected first-order (as the SA reference
+solutions are) and does not limit them. `limiter = 0` reconstructs unlimited. For smooth subsonic
+flows that is the right choice: the limiter switches in boundary layers and holds the iteration in a
+limit cycle a few orders above round-off.
 
 This limiter is directional and edge-local. It is less multidimensional than a Venkatakrishnan-style nodal extrema limiter, but it maps cleanly onto OP2 loops.
 
@@ -267,41 +273,53 @@ Implementation:
 - `hllc_flux_op2`
 - called from `edge_flux_kernel` and `boundary_flux_kernel`
 
-## 8. Thin-Layer Viscous Flux
+## 8. Viscous Flux
 
-The viscous path uses an edge-based thin-layer approximation. For an edge-aligned direction,
+Each edge's viscous flux is the full Navier-Stokes one, from the nodal states (not the reconstructed
+ones). The gradients of \(u, v, w, T\) are the edge's average of the two nodes' Green-Gauss
+gradients, with the component along the edge \(\mathbf{e}=\Delta\mathbf{r}/|\Delta\mathbf{r}|\)
+replaced by the edge difference:
 
 \[
-\frac{\partial u}{\partial n}\approx \frac{u_R-u_L}{|\Delta \mathbf{r}|},
+\nabla\phi_{ij} = \overline{\nabla\phi} + \left(\frac{\phi_j-\phi_i}{|\Delta\mathbf{r}|}
+- \overline{\nabla\phi}\cdot\mathbf{e}\right)\mathbf{e},
+\]
+
+which keeps the stencil compact along the edge and adds the cross terms. The flux through
+\(\Delta\mathbf{S}_{ij}\) is \(\boldsymbol{\tau}\cdot\Delta\mathbf{S}\) for momentum and
+\(\bar{\mathbf{u}}\cdot\boldsymbol{\tau}\cdot\Delta\mathbf{S} + k\nabla T\cdot\Delta\mathbf{S}\) for
+energy, with
+
+\[
+\boldsymbol{\tau} = (\mu+\mu_t)\left(\nabla\mathbf{u}+\nabla\mathbf{u}^T-\tfrac{2}{3}(\nabla\cdot\mathbf{u})\mathbf{I}\right),
 \qquad
-\frac{\partial T}{\partial n}\approx \frac{T_R-T_L}{|\Delta \mathbf{r}|},
-\qquad
-\frac{\partial \tilde{\nu}}{\partial n}\approx \frac{\tilde{\nu}_R-\tilde{\nu}_L}{|\Delta \mathbf{r}|}.
+k = c_p\left(\frac{\mu}{Pr}+\frac{\mu_t}{Pr_t}\right),\ Pr_t = 0.9,
 \]
 
-The laminar viscosity uses Sutherland's law:
+Sutherland's law for \(\mu\) and \(\mu_t = \rho\tilde\nu f_{v1}\). With zero gradients the same
+function gives the compact part alone, which the first-order Jacobian and the no-slip wall's flux
+take. A slip wall (a symmetry plane) takes the normal stress \(\mathbf{n}\cdot\boldsymbol{\tau}\cdot\mathbf{n}\)
+of the node's gradient through its sub-face (`symmetry_stress_kernel`): it balances the interior
+edges' \(-\tfrac{2}{3}\mu\nabla\cdot\mathbf{u}\), which otherwise drives a spurious velocity
+normal to the plane.
+
+SA's diffusion, \(\frac{1}{\sigma}[\nabla\cdot((\mu+\rho\tilde\nu)\nabla\tilde\nu) + c_{b2}\rho|\nabla\tilde\nu|^2]\),
+is taken as node-based codes take it,
 
 \[
-\mu(T)=\mu_{ref}\left(\frac{T}{T_{ref}}\right)^{3/2}
-\frac{T_{ref}+S}{T+S}.
+\frac{1+c_{b2}}{\sigma}\nabla\cdot\left((\mu+\rho\tilde\nu)\nabla\tilde\nu\right)
+- \frac{c_{b2}}{\sigma}(\mu+\rho\tilde\nu)_i\nabla^2\tilde\nu,
 \]
 
-Thermal conductivity is
-
-\[
-k = \mu \frac{\gamma c_v}{Pr}.
-\]
-
-The OP2 implementation adds eddy viscosity from the SA working variable through the standard \(f_{v1}\) relation.
-
-The thin-layer viscous flux is then approximated from the normal derivatives of velocity, temperature, and SA variable.
+both through compact edge differences, so every edge's coefficient stays positive. The
+\(c_{b2}|\nabla\tilde\nu|^2\) source from nodal gradients feeds on their noise on stretched cells
+(it drove \(\tilde\nu/\nu\) to \(10^4\) ahead of a flat plate's leading edge).
 
 Implementation:
 
-- `dynamic_viscosity_op2`
-- `thermal_conductivity_op2`
-- `eddy_viscosity_op2`
-- `thin_layer_viscous_flux_op2`
+- `viscous_flux_op2`, `viscous_gradients_op2`, `stress_op2`
+- `sa_cb2_coefficient_op2` (the second part, in `edge_flux_kernel` and `jac_edge_kernel`)
+- `symmetry_stress_kernel`
 
 ## 9. Boundary Conditions
 
@@ -309,8 +327,9 @@ Boundary faces are stored as quads and processed in a dedicated OP2 boundary-fac
 
 Supported boundary types:
 
-- `Farfield`
-- `Inlet`
+- `Farfield`, `Inlet`: the free stream, imposed strongly at their nodes in viscous runs
+- `Characteristic`: a Riemann far field, weak
+- `TotalInlet`: subsonic inflow at the free stream's total pressure and temperature, weak
 - `Outlet`
 - `SlipWall`
 - `NoSlipWall`
@@ -320,6 +339,11 @@ Supported boundary types:
 Each node of a boundary face takes the flux through its own sub-face \(\Delta\mathbf{S}_{f,i}\), from its own state \(\mathbf{W}_i\) and a ghost state built from it. (A single flux from the face-averaged state, shared equally, leaves the boundary blind to node-to-node oscillations along it.) The ghost state \(\mathbf{W}_{ghost}\) is:
 
 - `Farfield`, `Inlet`: replace with freestream primitive
+- `Characteristic`: the Riemann invariants \(u_n \pm 2a/(\gamma-1)\) along the outward normal, the
+  outgoing one from the node and the incoming one from the free stream; the tangential velocity,
+  entropy and \(\tilde\nu\) from the side the flow comes from (`characteristic_state_op2`)
+- `TotalInlet`: the static pressure from the node, the free stream's total pressure and temperature
+  and its direction (`total_inlet_state_op2`)
 - `Outlet`: copy interior state, replace only pressure with freestream pressure
 - `SlipWall`: reflect normal velocity
 - `NoSlipWall`: reflect normal velocity for inviscid flux, and enforce zero wall velocity in the viscous wall state
@@ -334,7 +358,7 @@ Implementation:
 For viscous runs, the OP2 implementation also enforces boundary node states before each Runge-Kutta stage and after each implicit update:
 
 - inlet/farfield nodes are reset to freestream
-- no-slip wall nodes are forced to zero velocity
+- no-slip wall nodes are forced to zero velocity, and to \(\tilde\nu=0\) with SA
 
 These components have no residual (`zero_constrained_kernel`): the enforcement sets them. Slip walls and outlets are weak, through their ghost states' fluxes only. Projecting slip nodes' velocity onto the wall would undo part of every update the residual asks for, and a node on two slip planes has no single normal to project on.
 
@@ -411,21 +435,26 @@ Implementation:
 
 ## 12. Spalart-Allmaras Source Term
 
-The OP2 implementation currently includes the SA source contribution in nodal source form. The exact transport flux remains embedded in the conservative/viscous update, while the explicit source term is added in a separate node loop.
-
-The source structure is
+The production and destruction of the standard model (no \(f_{t2}\)), as nodal sources:
 
 \[
-D_{SA} = P_{SA} - D_{SA}^{wall}
+\rho\,(c_{b1}\tilde S\tilde\nu - c_{w1}f_w(\tilde\nu/d)^2),
 \]
 
-with wall-distance dependence and a simple vorticity magnitude surrogate built from velocity gradients.
+with the wall distance \(d\) of the preprocessed mesh. \(\tilde S = \Omega + \bar S\) is kept positive
+smoothly, as the NASA Turbulence Modeling Resource's SA does (\(\bar S \ge -c_2\Omega\), else
+\(\Omega + \Omega(c_2^2\Omega + c_3\bar S)/((c_3-2c_2)\Omega-\bar S)\), \(c_2=0.7\), \(c_3=0.9\)): a hard clip of it
+switches in the buffer layer. The diffusion is in section 8.
+
+In the implicit scheme's Jacobian the source's derivative by \(\tilde\nu\) is a difference of the
+source terms themselves: the destruction's through \(r\) and \(f_w\) as well (near walls about
+twice the \(2D/\tilde\nu\) of \(D\propto\tilde\nu^2\), whose Newton steps overshoot into a
+two-step oscillation), and the production's only where it damps.
 
 Implementation:
 
-- `sa_source_kernel`
-
-This is intentionally a compact engineering implementation rather than a full production-grade SA closure with all optional compressibility or transition corrections.
+- `sa_terms_op2`, `sa_source_kernel`
+- `jac_node_kernel`
 
 ## 13. OP2 Data Model
 
@@ -481,6 +510,21 @@ The OP2 executable does not read the original internal mesh objects or raw Hydra
 - `bnode_wall [Nb,1]`
 - `bnode_slip [Nb,1]`
 - `bnode_normal [Nb,3]`
+
+`node_wall_distance` is the distance to the nearest no-slip wall face, which the
+SA source terms read (a node far from every wall has a large value, and no wall
+at all leaves 1e30). The procedural structured meshes (`bump3d`,
+`axisymmetric_body`, `naca_wing`) used to leave it at the largest `double`
+(a loop that ran before the boundary faces were counted), which switched the
+SA production and destruction off: meshes written before this fix have to be
+generated again. For them the distance is exact to the ymin boundary's no-slip
+faces within three columns of the node's own, and to a sample of them beyond;
+with at most 4096 such faces (a 2D grid's), exact to all of them.
+
+The structured generators also read 2D PLOT3D grids (`plot3d2d`, one block,
+extruded one cell between slip planes, its jmin boundary a no-slip wall over
+`wall_x0` to `wall_x1`) and build circular-cylinder O-grids (`cylinder`,
+periodic around). Their boundary faces point away from their own cell.
 
 All connectivity is zero-based in the preprocessed OP2 mesh. Meshes written before `bface_node_normals` existed must be preprocessed again. (The solver no longer reads `bnode_slip` and `bnode_normal`.)
 
@@ -570,20 +614,21 @@ The matrix is $\partial R/\partial q$ of the first-order residual, with
 $6\times 6$ blocks on the edge graph, assembled by par loops straight into the
 solver library's storage (`op_arg_mat`):
 
-- each edge: the derivatives of its first-order flux (HLLC less thin-layer
-  viscous) by both end states, by one-sided differences of the same flux
-  functions (step $10^{-7}\max(|q_c|, s_c)$ in component $c$), as four
-  blocks;
+- each edge: the derivatives of its first-order flux (HLLC less the
+  viscous flux's compact part) by both end states, by one-sided differences
+  of the same flux functions (step $10^{-7}\max(|q_c|, s_c)$ in component
+  $c$), as four blocks, and those of SA's non-conservative diffusion part;
 - each boundary sub-face: the derivative of the node's boundary flux (ghost
   state included) by the node's state, the same way, on the node's diagonal
   block;
-- each node: the pseudo-time term and the SA destruction's derivative.
+- each node: the pseudo-time term (and in dual time stepping the physical
+  one) and the SA source's derivative (section 12).
 
 For first-order runs this is the residual's Jacobian (Newton's method at
 large CFL); second-order runs keep it as an approximation.
 
-Components the viscous scheme enforces (all at Dirichlet nodes, momentum at
-no-slip nodes) are rows of the identity with a zero right-hand side. The
+Components the viscous scheme enforces (all at Dirichlet nodes, momentum and
+SA's at no-slip nodes) are rows of the identity with a zero right-hand side. The
 system is solved in variables scaled by the free stream
 ($\rho, \rho a, \rho a^2, \rho\nu$), which balances the Krylov norms.
 
@@ -599,11 +644,29 @@ as config keys or `--key value` on the command line:
 | `jacobian_interval` | N | reassemble every N iterations |
 | `partition` | `kway`, `random`, `inertial` | ParMETIS, OP2's random, or its inertial partitioner |
 | `reorder` | 0, 1 | renumber each rank's mesh after partitioning (`op_renumber`) |
+| `dump_interval`, `dump_prefix` | N, path | every N-th iteration writes the system just solved to `<prefix>_<iteration>.h5` (see below) |
 | `diags`, `timing`, `check` | | OP2's diagnostics, timing output, and a check that fails the run unless L2(rho) falls by `check` |
 
 The solvers are named `nssolver`, `nssolver_bjacobi` and `nssolver_neumann`
 in the JSON, each in every library's own terms. `tests/test_implicit.sh`
 runs the scheme across libraries, variants and these options.
+
+**Replaying the linear systems.** With `--dump-interval N --dump-prefix P`
+each N-th iteration writes, after its solve, `P_<iteration>.h5`: the matrix
+(`A`, OP2's `op_mat_write_hdf5` layout), the right-hand side `A/b` and the
+solution `A/x` the solve returned (from a zero initial guess), and a line to
+`P_index.csv` (iteration, CFL, linear iterations, residual). OP2's
+`solve_hdf5_6_<variant>` driver reads a file on any rank count and solves it
+with any library and settings; `scripts/replay_systems.sh -v VARIANTS
+FILE.h5...` tabulates iterations and true residuals for several settings
+(`OP_SOLVE_CONFIG` overrides over `configs/solve.json`). The first setting,
+on the run's rank count, reproduces the run's solve exactly; block-Jacobi
+preconditioners follow the partition, so other rank counts differ. The
+dumped `A/x` is itself a solve to the linear tolerance, so the error against
+it is of that order: judge a setting by its true residual. A par-loop
+preconditioner (`pc = bjacobi`, `neumann`) or `op = matfree` is not part of
+the file; the replay solves the assembled system with library
+preconditioners, and `pmat = decoupled`'s matrix P is not dumped.
 
 `outlet_backflow = freestream` gives an outlet face whose interior flow
 points inward the free-stream ghost state, as an inlet would. The default,
@@ -611,3 +674,39 @@ points inward the free-stream ghost state, as an inlet would. The default,
 which a reversed outflow can feed itself. With closed control volumes no case
 here develops backflow (the two give identical histories), so this is a
 safeguard only.
+
+## 18. Dual Time Stepping
+
+With `time_step` \(\Delta t > 0\) (implicit scheme) each of `physical_steps` steps solves
+
+\[
+\mathbf{R}(\mathbf{Q}) + V\,\frac{c_0\mathbf{Q} - c_1\mathbf{Q}^n + c_2\mathbf{Q}^{n-1}}{\Delta t} = 0,
+\]
+
+second-order backward differences (\(c = 3/2, 2, 1/2\); `time_order = 2`) after a first-order first
+step (\(c = 1, 1, 0\)), by the pseudo-time iterations of section 17: the physical term adds
+\(c_0V/\Delta t\) to the diagonal blocks (`jac_node_kernel`), the matrix-free operator differences
+the whole residual, and the CFL ramp restarts every step. A step ends when the residual has
+fallen by `inner_tolerance` or after `inner_iterations`. `restart_file` starts from a solution's
+`q`; `snapshot_interval` writes `q` and the primitives every that many steps.
+
+The output file's `.history.csv` has each step's force on the no-slip walls,
+\(\sum(p\,\Delta\mathbf{S} - \mathbf{R}_{1..3})\) over their nodes' sub-faces: a wall node's momentum
+residual, which enforcing no slip discards, is its flux \(p\Delta\mathbf{S}\) through the wall less
+the traction that would balance it.
+
+Implementation:
+
+- `unsteady_residual_kernel`, `implicit_residual`
+- `wall_pressure_force_kernel`, `wall_force_kernel`
+
+## 19. Verification Runs
+
+- `scripts/tmr/flatplate.sh`: the NASA Turbulence Modeling Resource's 2D zero-pressure-gradient
+  flat plate (SA, M 0.2, Re 5e6 per unit length) on its PLOT3D grid family (`plot3d2d`
+  preprocessing), with TMR's boundaries (total-pressure inflow, Riemann top, pressure outflow);
+  skin friction at x = 0.97 and drag against the CFL3D and FUN3D reference values
+  (`scripts/tmr/flatplate_forces.py`).
+- `scripts/cylinder/run.sh`: laminar vortex shedding behind a circular cylinder at Re 100
+  (`cylinder` preprocessing, a periodic O-grid), by dual time stepping; Strouhal number, mean drag
+  and lift amplitude (`scripts/cylinder/forces.py`).

@@ -5,7 +5,7 @@
 // residual the explicit scheme marches with, through OP2's solver layer.
 //
 // The matrix is dR/dq of the first-order residual: each edge's flux (HLLC
-// and thin-layer viscous) and each boundary sub-face's, differentiated by
+// and the viscous flux's compact part) and each boundary sub-face's, differentiated by
 // one-sided differences of the same flux functions, and the SA destruction
 // term. Nodes whose state the viscous scheme enforces keep those components:
 // their rows are the identity and their right-hand side 0.
@@ -24,7 +24,7 @@ inline double jacobian_step_op2(const double *q, int c) {
 }
 
 // An edge's first-order flux from primitive states pl to pr through area
-// vector S: HLLC less the thin-layer viscous flux over delta.
+// vector S: HLLC less the compact part of the viscous flux over delta.
 inline void edge_flux_first_order_op2(const double *pl, const double *pr, const double *delta, const double *S,
                                       double *flux) {
   double ql[NVAR_OP2];
@@ -34,7 +34,8 @@ inline void edge_flux_first_order_op2(const double *pl, const double *pr, const 
   hllc_flux_op2(pl, ql, pr, qr, S, flux);
   if (op2_include_viscous) {
     double viscous[NVAR_OP2];
-    thin_layer_viscous_flux_op2(pl, pr, delta, S, viscous);
+    const double zero[NGRAD_OP2] = {};
+    viscous_flux_op2(pl, pr, zero, zero, delta, S, viscous);
     for (int m = 0; m < NVAR_OP2; ++m) flux[m] -= viscous[m];
   }
 }
@@ -98,6 +99,22 @@ inline void jac_edge_kernel(const double *coord_l, const double *coord_r, const 
       }
     }
   }
+
+  // The SA diffusion's node part, which is not a flux: row l takes c_l
+  // (nu_r - nu_l), row r c_r (nu_l - nu_r), with nu = q5 / rho.
+  if (op2_include_sa) {
+    const int k = NBLOCK_OP2 - 1;
+    const double c_l = sa_cb2_coefficient_op2(pl, delta, S);
+    const double c_r = sa_cb2_coefficient_op2(pr, delta, S);
+    if (!constrained_op2(bc_l, IDX_NU)) {
+      A_ll[k] -= c_l / pl[0];
+      A_lr[k] += c_l / pr[0];
+    }
+    if (!constrained_op2(bc_r, IDX_NU)) {
+      A_rl[k] += c_r / pl[0];
+      A_rr[k] -= c_r / pr[0];
+    }
+  }
 }
 
 // Each node's boundary flux depends on its own state alone, so a boundary
@@ -148,16 +165,29 @@ inline void zero_block_kernel(double *block) {
 }
 
 // A node's diagonal block: V / dt from the pseudo-time step (spectral / CFL,
-// as the explicit step's dt = CFL V / spectral), its boundary faces' blocks
+// as the explicit step's dt = CFL V / spectral) and c0 V / time_step from a
+// physical one (physical = c0 / time_step, 0 if steady), its boundary faces' blocks
 // (bdiag) and the SA destruction's derivative; constrained rows the identity.
 inline void jac_node_kernel(const int *bc, const double *spectral, const double *bdiag, const double *prim,
                             const double *grad, const double *wall_dist, const double *volume, const double *cfl,
-                            const int *decoupled, double *A) {
-  const double time = spectral[0] / cfl[0];
+                            const double *physical, const int *decoupled, double *A) {
+  const double time = spectral[0] / cfl[0] + physical[0] * volume[0];
+  // d(D - P)/d nu_tilde by a difference of the source terms (D's through r
+  // and f_w too, about twice 2 D / nu_tilde near walls, which overshoots), P's
+  // part only where it damps: a growing P stays explicit.
   double sa = 0.0;
   double production, destruction;
-  if (op2_include_sa && sa_terms_op2(prim, grad, wall_dist, &production, &destruction))
-    sa = 2.0 * volume[0] * destruction / fmax(prim[5], 1.0e-30);
+  if (op2_include_sa && sa_terms_op2(prim, grad, wall_dist, &production, &destruction)) {
+    double perturbed[NPRIM_OP2];
+    for (int m = 0; m < NPRIM_OP2; ++m) perturbed[m] = prim[m];
+    const double h = 1.0e-7 * fmax(prim[5], op2_scale[5] / prim[0]);
+    perturbed[5] += h;
+    double production_h, destruction_h;
+    sa_terms_op2(perturbed, grad, wall_dist, &production_h, &destruction_h);
+    const double d_destruction = (destruction_h - destruction) / h;
+    const double d_production = (production_h - production) / h;
+    sa = volume[0] * fmax(d_destruction - fmin(d_production, 0.0), 0.0);
+  }
   for (int r = 0; r < NVAR_OP2; ++r) {
     const bool fixed = constrained_op2(bc, r);
     for (int c = 0; c < NVAR_OP2; ++c) {
@@ -170,6 +200,35 @@ inline void jac_node_kernel(const int *bc, const double *spectral, const double 
       A[k] += bdiag[k] * op2_scale[c] / op2_scale[r] + (r == c ? time : 0.0) + (r == 5 && c == 5 ? sa : 0.0);
     }
   }
+}
+
+// Dual time stepping's physical term, V (c0 q - c1 q^n + c2 q^n-1) / time_step
+// (c the coefficients over time_step), into the residual but on constrained
+// components.
+inline void unsteady_residual_kernel(const int *bc, const double *volume, const double *c, const double *q,
+                                     const double *qn, const double *qnm1, double *res) {
+  for (int m = 0; m < NVAR_OP2; ++m)
+    if (!constrained_op2(bc, m)) res[m] += volume[0] * (c[0] * q[m] - c[1] * qn[m] + c[2] * qnm1[m]);
+}
+
+// The force the flow puts on the no-slip walls, p S - R summed over their
+// nodes' sub-faces S: a wall node's momentum residual R, which enforcing no
+// slip discards, is its flux p S through the wall less the traction tau S
+// that would balance it. The p S part per face, then -R per node.
+inline void wall_pressure_force_kernel(const int *btype, const int *num_nodes, const double *shares,
+                                       const double *prim1, const double *prim2, const double *prim3,
+                                       const double *prim4, double *force) {
+  if (btype[0] != BTYPE_NOSLIPWALL) return;
+  const int nodes = num_nodes[0] == 4 ? 4 : 3;
+  for (int j = 0; j < nodes; ++j) {
+    const double p = j == 0 ? prim1[4] : j == 1 ? prim2[4] : j == 2 ? prim3[4] : prim4[4];
+    for (int d = 0; d < 3; ++d) force[d] += p * shares[3 * j + d];
+  }
+}
+
+inline void wall_force_kernel(const int *is_wall, const double *res, double *force) {
+  if (!is_wall[0]) return;
+  for (int d = 0; d < 3; ++d) force[d] -= res[1 + d];
 }
 
 // b = -S^-1 R but on constrained components, and a zero initial guess.

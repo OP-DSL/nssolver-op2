@@ -19,6 +19,8 @@ static constexpr int BTYPE_INLET = 1;
 static constexpr int BTYPE_OUTLET = 2;
 static constexpr int BTYPE_SLIPWALL = 3;
 static constexpr int BTYPE_NOSLIPWALL = 4;
+static constexpr int BTYPE_CHARACTERISTIC = 5;
+static constexpr int BTYPE_TOTAL_INLET = 6;
 
 extern double op2_gamma;
 extern double op2_gas_constant;
@@ -30,6 +32,7 @@ extern double op2_freestream[6];
 extern double op2_rho_floor;
 extern double op2_p_floor;
 extern int op2_second_order;
+extern int op2_limiter;
 extern int op2_include_viscous;
 extern int op2_include_sa;
 extern int op2_outlet_backflow;
@@ -253,34 +256,83 @@ inline void hllc_flux_op2(const double *pl, const double *ql, const double *pr, 
   }
 }
 
-inline void thin_layer_viscous_flux_op2(const double *pl, const double *pr, const double *delta_r, const double *area_vector,
-                                        double *flux) {
-  const double distance = fmax(vec_norm3(delta_r), 1.0e-14);
-  const double area = vec_norm3(area_vector);
+// A node's gradients of u, v, w and T from its primitives' (rho, u, v, w, p,
+// nu_tilde) gradient.
+inline void viscous_gradients_op2(const double *p, const double *grad, double g[4][3]) {
+  const double t = p[4] / (p[0] * op2_gas_constant);
+  for (int d = 0; d < 3; ++d) {
+    g[0][d] = grad[3 * IDX_U + d];
+    g[1][d] = grad[3 * IDX_V + d];
+    g[2][d] = grad[3 * IDX_W + d];
+    g[3][d] = (grad[3 * IDX_P + d] / op2_gas_constant - t * grad[3 * IDX_RHO + d]) / p[0];
+  }
+}
+
+// The stress tensor of velocity gradient g (g[i][j] = du_i/dx_j), viscosity mu.
+inline void stress_op2(double mu, const double g[4][3], double tau[3][3]) {
+  const double divergence = g[0][0] + g[1][1] + g[2][2];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) tau[i][j] = mu * (g[i][j] + g[j][i] - (i == j ? 2.0 / 3.0 * divergence : 0.0));
+}
+
+// SA's diffusion (1/sigma) [div((mu + rho nu) grad nu) + cb2 rho |grad nu|^2]
+// is taken, as node-based codes do, as (1 + cb2) / sigma div((mu + rho nu)
+// grad nu) - cb2 / sigma (mu + rho nu)_node lap(nu), both through compact edge
+// differences: every edge's coefficient stays positive, where cb2 |grad nu|^2
+// from node gradients feeds on their noise. The second part's coefficient for
+// a node of state p on an edge (delta, S); the first is viscous_flux_op2's.
+inline double sa_cb2_coefficient_op2(const double *p, const double *delta, const double *S) {
+  constexpr double cb2_over_sigma = 0.622 * 1.5;
+  const double l2 = fmax(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2], 1.0e-28);
+  const double mu = dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant));
+  return cb2_over_sigma * (mu + p[0] * fmax(p[5], 0.0)) * (delta[0] * S[0] + delta[1] * S[1] + delta[2] * S[2]) /
+         l2;
+}
+
+// The viscous flux through area vector S from node l to node r (delta = x_r -
+// x_l): the full stress tensor, heat flux with the turbulent part, and SA's
+// conservative diffusion part (sa_cb2_coefficient_op2). Each gradient of u, v,
+// w and T is the edge's average with its component along the edge replaced by
+// the edge difference; with zero gradients that difference alone, the compact
+// part the first-order Jacobian and the wall's flux take.
+inline void viscous_flux_op2(const double *pl, const double *pr, const double *gl, const double *gr,
+                             const double *delta, const double *S, double *flux) {
+  constexpr double prandtl_turbulent = 0.9;
+  constexpr double one_plus_cb2_over_sigma = 1.622 * 1.5;
+  const double length = fmax(vec_norm3(delta), 1.0e-14);
+  const double e[3] = {delta[0] / length, delta[1] / length, delta[2] / length};
   const double t_l = pl[4] / (pl[0] * op2_gas_constant);
   const double t_r = pr[4] / (pr[0] * op2_gas_constant);
-  const double mu = 0.5 * (dynamic_viscosity_op2(t_l) + dynamic_viscosity_op2(t_r)) +
-                    0.5 * (eddy_viscosity_op2(pl) + eddy_viscosity_op2(pr));
-  const double k = 0.5 * (thermal_conductivity_op2(t_l) + thermal_conductivity_op2(t_r));
-  const double du_dn = (pr[1] - pl[1]) / distance;
-  const double dv_dn = (pr[2] - pl[2]) / distance;
-  const double dw_dn = (pr[3] - pl[3]) / distance;
-  const double dT_dn = (t_r - t_l) / distance;
-  const double dnu_dn = (pr[5] - pl[5]) / distance;
-  const double tau_xn = mu * du_dn;
-  const double tau_yn = mu * dv_dn;
-  const double tau_zn = mu * dw_dn;
-  const double um = 0.5 * (pl[1] + pr[1]);
-  const double vm = 0.5 * (pl[2] + pr[2]);
-  const double wm = 0.5 * (pl[3] + pr[3]);
-  const double heat_flux = -k * dT_dn;
+  const double phi_l[4] = {pl[1], pl[2], pl[3], t_l};
+  const double phi_r[4] = {pr[1], pr[2], pr[3], t_r};
+
+  double g[4][3], g_l[4][3], g_r[4][3];
+  viscous_gradients_op2(pl, gl, g_l);
+  viscous_gradients_op2(pr, gr, g_r);
+  for (int v = 0; v < 4; ++v) {
+    for (int d = 0; d < 3; ++d) g[v][d] = 0.5 * (g_l[v][d] + g_r[v][d]);
+    const double along = g[v][0] * e[0] + g[v][1] * e[1] + g[v][2] * e[2];
+    const double jump = (phi_r[v] - phi_l[v]) / length - along;
+    for (int d = 0; d < 3; ++d) g[v][d] += jump * e[d];
+  }
+
+  const double mu_lam = 0.5 * (dynamic_viscosity_op2(t_l) + dynamic_viscosity_op2(t_r));
+  const double mu_t = 0.5 * (eddy_viscosity_op2(pl) + eddy_viscosity_op2(pr));
+  const double k = op2_gamma * cv_op2() * (mu_lam / op2_prandtl + mu_t / prandtl_turbulent);
+  double tau[3][3];
+  stress_op2(mu_lam + mu_t, g, tau);
 
   flux[0] = 0.0;
-  flux[1] = area * tau_xn;
-  flux[2] = area * tau_yn;
-  flux[3] = area * tau_zn;
-  flux[4] = area * (um * tau_xn + vm * tau_yn + wm * tau_zn - heat_flux);
-  flux[5] = area * mu * dnu_dn;
+  flux[4] = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double tau_s = tau[i][0] * S[0] + tau[i][1] * S[1] + tau[i][2] * S[2];
+    flux[1 + i] = tau_s;
+    flux[4] += 0.5 * (pl[1 + i] + pr[1 + i]) * tau_s;
+  }
+  flux[4] += k * (g[3][0] * S[0] + g[3][1] * S[1] + g[3][2] * S[2]);
+  const double rho_nu = 0.5 * (pl[0] * fmax(pl[5], 0.0) + pr[0] * fmax(pr[5], 0.0));
+  flux[5] = one_plus_cb2_over_sigma * (mu_lam + rho_nu) * (pr[5] - pl[5]) / length *
+            (e[0] * S[0] + e[1] * S[1] + e[2] * S[2]);
 }
 
 inline double scalar_edge_limiter_op2(double projected_delta, double edge_delta) {
@@ -299,10 +351,68 @@ inline void reconstruct_primitive_op2(const double *prim, const double *grad, co
   out[4] = fmax(out[4], 1.0e-12);
 }
 
+// The boundary state of a Riemann far field: the invariants un +- 2a/(gamma -
+// 1) along the outward normal, the outgoing one from the interior and the
+// incoming one from the free stream, and the tangential velocity, entropy and
+// nu_tilde from the side the flow comes from.
+inline void characteristic_state_op2(const double *interior, const double *n, double *b) {
+  const double *inf = op2_freestream;
+  const double g = op2_gamma;
+  const double un_i = normal_velocity_op2(interior, n);
+  const double un_inf = normal_velocity_op2(inf, n);
+  const double a_i = speed_of_sound_op2(interior);
+  const double a_inf = speed_of_sound_op2(inf);
+  if (un_inf <= -a_inf || un_i >= a_i) {
+    for (int m = 0; m < NPRIM_OP2; ++m) b[m] = un_i >= a_i ? interior[m] : inf[m];
+    return;
+  }
+  const double r_out = un_i + 2.0 * a_i / (g - 1.0);
+  const double r_in = un_inf - 2.0 * a_inf / (g - 1.0);
+  const double un = 0.5 * (r_out + r_in);
+  const double a = 0.25 * (g - 1.0) * (r_out - r_in);
+  // The side's weight blends across |un| < 0.05 a: where the flow runs along
+  // the boundary a switch would flip with round-off and stall Newton.
+  const double w = fmin(1.0, fmax(0.0, 0.5 + 10.0 * un / a));
+  const double entropy = w * interior[4] / pow(interior[0], g) + (1.0 - w) * inf[4] / pow(inf[0], g);
+  b[0] = pow(a * a / (g * entropy), 1.0 / (g - 1.0));
+  b[4] = b[0] * a * a / g;
+  for (int d = 0; d < 3; ++d)
+    b[1 + d] = w * (interior[1 + d] - un_i * n[d]) + (1.0 - w) * (inf[1 + d] - un_inf * n[d]) + un * n[d];
+  b[5] = w * interior[5] + (1.0 - w) * inf[5];
+}
+
+// The boundary state of a subsonic inflow at the free stream's total pressure
+// and temperature, along its direction: the static pressure from the interior.
+inline void total_inlet_state_op2(const double *interior, double *b) {
+  const double *inf = op2_freestream;
+  const double g = op2_gamma;
+  const double speed_inf = sqrt(inf[1] * inf[1] + inf[2] * inf[2] + inf[3] * inf[3]);
+  const double t_inf = inf[4] / (inf[0] * op2_gas_constant);
+  const double ratio_inf = 1.0 + 0.5 * (g - 1.0) * speed_inf * speed_inf / (g * op2_gas_constant * t_inf);
+  const double t_total = t_inf * ratio_inf;
+  const double p_total = inf[4] * pow(ratio_inf, g / (g - 1.0));
+  const double p = fmin(interior[4], p_total);
+  const double ratio = pow(p_total / p, (g - 1.0) / g);
+  const double t = t_total / ratio;
+  const double speed = sqrt(fmax(2.0 * g / (g - 1.0) * op2_gas_constant * t * (ratio - 1.0), 0.0));
+  b[0] = p / (op2_gas_constant * t);
+  b[4] = p;
+  for (int d = 0; d < 3; ++d) b[1 + d] = speed_inf > 0.0 ? speed * inf[1 + d] / speed_inf : 0.0;
+  b[5] = inf[5];
+}
+
 inline void make_boundary_ghost_state_op2(const double *interior, const double *unit_normal, int boundary_type, double *ghost) {
   for (int m = 0; m < NVAR_OP2; ++m) ghost[m] = interior[m];
   if (boundary_type == BTYPE_FARFIELD || boundary_type == BTYPE_INLET) {
     for (int m = 0; m < NVAR_OP2; ++m) ghost[m] = op2_freestream[m];
+    return;
+  }
+  if (boundary_type == BTYPE_CHARACTERISTIC) {
+    characteristic_state_op2(interior, unit_normal, ghost);
+    return;
+  }
+  if (boundary_type == BTYPE_TOTAL_INLET) {
+    total_inlet_state_op2(interior, ghost);
     return;
   }
   const double un = interior[1] * unit_normal[0] + interior[2] * unit_normal[1] + interior[3] * unit_normal[2];
@@ -361,6 +471,7 @@ inline void enforce_boundary_node_kernel(const int *is_dirichlet, const int *is_
     p[1] = 0.0;
     p[2] = 0.0;
     p[3] = 0.0;
+    if (op2_include_sa) p[5] = 0.0;
   }
   primitive_to_conservative_op2(p, q);
 }
@@ -376,8 +487,8 @@ inline void edge_spectral_kernel(const double *prim_l, const double *prim_r, con
   if (op2_include_viscous) {
     const double t_l = prim_l[4] / (prim_l[0] * op2_gas_constant);
     const double t_r = prim_r[4] / (prim_r[0] * op2_gas_constant);
-    const double mu_l = dynamic_viscosity_op2(t_l);
-    const double mu_r = dynamic_viscosity_op2(t_r);
+    const double mu_l = dynamic_viscosity_op2(t_l) + eddy_viscosity_op2(prim_l);
+    const double mu_r = dynamic_viscosity_op2(t_r) + eddy_viscosity_op2(prim_r);
     spec_l[0] += 2.0 * mu_l * area * area / fmax(prim_l[0] * vol_l[0], 1.0e-14);
     spec_r[0] += 2.0 * mu_r * area * area / fmax(prim_r[0] * vol_r[0], 1.0e-14);
   }
@@ -460,7 +571,7 @@ inline void bface_spectral_kernel(const int *num_nodes, const double *shares, co
     const double unit_normal[3] = {S[0] / area, S[1] / area, S[2] / area};
     s[j] = area * (fabs(normal_velocity_op2(p, unit_normal)) + speed_of_sound_op2(p));
     if (op2_include_viscous) {
-      const double mu = dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant));
+      const double mu = dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant)) + eddy_viscosity_op2(p);
       s[j] += 2.0 * mu * area * area / fmax(p[0] * vol, 1.0e-14);
     }
   }
@@ -479,8 +590,9 @@ inline double edge_limiter_scale_op2(const double *prim_center, const double *pr
                                      const double *delta_r) {
   // The second-order path uses a purely edge-local limiter so the OP2 loop can
   // stay on OP_READ/OP_INC data access patterns without node-global extrema.
+  // nu_tilde, advected first-order, does not limit the mean flow.
   double phi = 1.0;
-  for (int m = 0; m < NPRIM_OP2; ++m) {
+  for (int m = 0; m < IDX_NU; ++m) {
     const int base = 3 * m;
     const double projected = grad[base + 0] * delta_r[0] + grad[base + 1] * delta_r[1] + grad[base + 2] * delta_r[2];
     phi = fmin(phi, scalar_edge_limiter_op2(projected, prim_neighbor[m] - prim_center[m]));
@@ -491,15 +603,20 @@ inline double edge_limiter_scale_op2(const double *prim_center, const double *pr
 inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const double *prim_l_center, const double *prim_r_center,
                              const double *grad_l, const double *grad_r, const double *edge_weight, double *res_l, double *res_r) {
   // Reconstruct left and right edge states, compute the inviscid HLLC flux, and
-  // optionally subtract the thin-layer viscous correction before accumulating
+  // subtract the viscous flux of the nodal states before accumulating
   // equal-and-opposite residuals at the edge endpoints.
   double prim_l[NPRIM_OP2];
   double prim_r[NPRIM_OP2];
   if (op2_second_order) {
     const double delta_lr[3] = {0.5 * (coord_r[0] - coord_l[0]), 0.5 * (coord_r[1] - coord_l[1]), 0.5 * (coord_r[2] - coord_l[2])};
     const double delta_rl[3] = {-delta_lr[0], -delta_lr[1], -delta_lr[2]};
-    reconstruct_primitive_op2(prim_l_center, grad_l, delta_lr, edge_limiter_scale_op2(prim_l_center, prim_r_center, grad_l, delta_lr), prim_l);
-    reconstruct_primitive_op2(prim_r_center, grad_r, delta_rl, edge_limiter_scale_op2(prim_r_center, prim_l_center, grad_r, delta_rl), prim_r);
+    const double phi_l = op2_limiter ? edge_limiter_scale_op2(prim_l_center, prim_r_center, grad_l, delta_lr) : 1.0;
+    const double phi_r = op2_limiter ? edge_limiter_scale_op2(prim_r_center, prim_l_center, grad_r, delta_rl) : 1.0;
+    reconstruct_primitive_op2(prim_l_center, grad_l, delta_lr, phi_l, prim_l);
+    reconstruct_primitive_op2(prim_r_center, grad_r, delta_rl, phi_r, prim_r);
+    // First-order advection of nu_tilde, as the SA reference solutions use.
+    prim_l[IDX_NU] = prim_l_center[IDX_NU];
+    prim_r[IDX_NU] = prim_r_center[IDX_NU];
   } else {
     for (int m = 0; m < NPRIM_OP2; ++m) {
       prim_l[m] = prim_l_center[m];
@@ -517,7 +634,7 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
   if (op2_include_viscous) {
     const double delta_full[3] = {coord_r[0] - coord_l[0], coord_r[1] - coord_l[1], coord_r[2] - coord_l[2]};
     double viscous[NVAR_OP2];
-    thin_layer_viscous_flux_op2(prim_l, prim_r, delta_full, edge_weight, viscous);
+    viscous_flux_op2(prim_l_center, prim_r_center, grad_l, grad_r, delta_full, edge_weight, viscous);
     for (int m = 0; m < NVAR_OP2; ++m) flux[m] -= viscous[m];
   }
 
@@ -525,11 +642,17 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
     res_l[m] += flux[m];
     res_r[m] -= flux[m];
   }
+  if (op2_include_sa) {
+    const double delta[3] = {coord_r[0] - coord_l[0], coord_r[1] - coord_l[1], coord_r[2] - coord_l[2]};
+    const double jump = prim_r_center[IDX_NU] - prim_l_center[IDX_NU];
+    res_l[IDX_NU] += sa_cb2_coefficient_op2(prim_l_center, delta, edge_weight) * jump;
+    res_r[IDX_NU] -= sa_cb2_coefficient_op2(prim_r_center, delta, edge_weight) * jump;
+  }
 }
 
 // The flux through a node's sub-face S of a boundary face of type btype
 // (unit normal n), from the node's own state p and its type-specific ghost,
-// and at a no-slip wall the thin-layer viscous flux over distance.
+// and at a no-slip wall the compact viscous flux over distance (adiabatic).
 inline void boundary_node_flux_op2(const double *p, const double *S, const double *n, int btype, double distance,
                                    double *flux) {
   double p_ghost[NPRIM_OP2];
@@ -548,7 +671,8 @@ inline void boundary_node_flux_op2(const double *p, const double *S, const doubl
     wall_state[3] = 0.0;
     const double delta_r[3] = {distance * n[0], distance * n[1], distance * n[2]};
     double viscous[NVAR_OP2];
-    thin_layer_viscous_flux_op2(p, wall_state, delta_r, S, viscous);
+    const double zero[NGRAD_OP2] = {};
+    viscous_flux_op2(p, wall_state, zero, zero, delta_r, S, viscous);
     for (int m = 0; m < NVAR_OP2; ++m) flux[m] -= viscous[m];
   }
 }
@@ -583,13 +707,58 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
   }
 }
 
+// A slip wall, a symmetry plane, takes the viscous normal stress n.tau.n of
+// each node's gradient through its sub-face: it balances the interior edges'
+// (the -2/3 mu div u among it), as no shear crosses the plane.
+inline void symmetry_stress_kernel(const int *btype, const double *normal, const double *area, const int *num_nodes,
+                                   const double *shares, const double *prim1, const double *prim2,
+                                   const double *prim3, const double *prim4, const double *grad1, const double *grad2,
+                                   const double *grad3, const double *grad4, double *r1, double *r2, double *r3,
+                                   double *r4) {
+  if (btype[0] != BTYPE_SLIPWALL) return;
+  const int nodes = num_nodes[0] == 4 ? 4 : 3;
+  const double amag = fmax(area[0], 1.0e-14);
+  const double n[3] = {normal[0] / amag, normal[1] / amag, normal[2] / amag};
+  double f[4][4];
+  for (int j = 0; j < 4; ++j)
+    for (int m = 0; m < 4; ++m) f[j][m] = 0.0;
+  for (int j = 0; j < nodes; ++j) {
+    double p[NPRIM_OP2], grad[NGRAD_OP2];
+    for (int m = 0; m < NPRIM_OP2; ++m)
+      p[m] = j == 0 ? prim1[m] : j == 1 ? prim2[m] : j == 2 ? prim3[m] : prim4[m];
+    for (int i = 0; i < NGRAD_OP2; ++i)
+      grad[i] = j == 0 ? grad1[i] : j == 1 ? grad2[i] : j == 2 ? grad3[i] : grad4[i];
+    double g[4][3], tau[3][3];
+    viscous_gradients_op2(p, grad, g);
+    stress_op2(dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant)) + eddy_viscosity_op2(p), g, tau);
+    double tau_nn = 0.0;
+    for (int a = 0; a < 3; ++a)
+      for (int b = 0; b < 3; ++b) tau_nn += n[a] * tau[a][b] * n[b];
+    for (int i = 0; i < 3; ++i) {
+      const double t = tau_nn * shares[3 * j + i];
+      f[j][i] = t;
+      f[j][3] += t * p[1 + i];
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    r1[1 + i] -= f[0][i];
+    r2[1 + i] -= f[1][i];
+    r3[1 + i] -= f[2][i];
+    if (nodes == 4) r4[1 + i] -= f[3][i];
+  }
+  r1[4] -= f[0][3];
+  r2[4] -= f[1][3];
+  r3[4] -= f[2][3];
+  if (nodes == 4) r4[4] -= f[3][3];
+}
+
 // Whether the viscous scheme enforces component m at a node
 // (enforce_boundary_node_kernel): bc counts the node's Dirichlet and no-slip
 // boundary entries (node_bc_kernel).
 inline bool constrained_op2(const int *bc, int m) {
   if (!op2_include_viscous) return false;
   if (bc[0] > 0) return true;
-  return bc[1] > 0 && m >= 1 && m <= 3;
+  return bc[1] > 0 && ((m >= 1 && m <= 3) || (m == IDX_NU && op2_include_sa));
 }
 
 inline void zero_node_bc_kernel(int *bc) {
@@ -635,7 +804,14 @@ inline bool sa_terms_op2(const double *prim, const double *grad, const double *w
   const double chi3 = chi * chi * chi;
   const double fv1 = chi3 / (chi3 + cv1 * cv1 * cv1);
   const double fv2 = 1.0 - chi / (1.0 + chi * fv1);
-  const double s_tilde = fmax(omega + nu_tilde * fv2 / (kappa * kappa * d * d), 0.3 * omega + 1.0e-14);
+  // S_tilde kept positive smoothly (TMR's SA, note 1(c)): a hard clip of it
+  // switches in the buffer layer and holds the iteration in a limit cycle.
+  constexpr double c2 = 0.7, c3 = 0.9;
+  const double s_bar = nu_tilde * fv2 / (kappa * kappa * d * d);
+  const double s_tilde = fmax(s_bar >= -c2 * omega
+                                  ? omega + s_bar
+                                  : omega + omega * (c2 * c2 * omega + c3 * s_bar) / ((c3 - 2.0 * c2) * omega - s_bar),
+                              1.0e-14);
   const double r = fmin(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
   const double g = r + cw2 * (pow(r, 6) - r);
   const double fw = g * pow((1.0 + pow(cw3, 6)) / (pow(g, 6) + pow(cw3, 6)), 1.0 / 6.0);

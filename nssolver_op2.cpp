@@ -26,6 +26,7 @@ double op2_freestream[6] = {1.225, 120.0, 0.0, 0.0, 101325.0, 0.0};
 double op2_rho_floor = 1.0e-4;
 double op2_p_floor = 100.0;
 int op2_second_order = 0;
+int op2_limiter = 1;
 int op2_include_viscous = 0;
 int op2_include_sa = 0;
 int op2_outlet_backflow = 0;
@@ -51,7 +52,8 @@ static void usage(const char *argv0) {
             << "  any config key, '-' or '_': e.g. --time-scheme implicit --implicit-cfl 50\n"
             << "  --solve-config FILE --pc lib|bjacobi|neumann --terms M --pmat A|decoupled\n"
             << "  --op assembled|matfree --partition kway|random|inertial --reorder 0|1\n"
-            << "  --jacobian-interval N --diags N --timing 0|1 --check FACTOR\n";
+            << "  --jacobian-interval N\n"
+            << "  --dump-interval N --dump-prefix PATH --diags N --timing 0|1 --check FACTOR\n";
 }
 
 static void write_residual_history_csv_op2(const std::string &path, const std::vector<double> &l2_rho,
@@ -88,8 +90,9 @@ static void to_primitive(const Mesh &m, op_dat q, op_dat prim) {
 }
 
 // Green-Gauss gradients from interior edges and boundary faces, divided by the
-// nodal control volume, for second-order reconstruction and SA diffusion;
-// first-order runs still zero them so the flux kernels read no stale values.
+// nodal control volume, for second-order reconstruction and viscous fluxes;
+// inviscid first-order runs still zero them so the flux kernels read no stale
+// values.
 static void gradients(const Mesh &m, bool needed, op_dat prim, op_dat grad) {
   op_par_loop(zero_grad_kernel, "zero_grad_kernel", m.nodes,
               op_arg_dat(grad, -1, OP_ID, NGRAD_OP2, "double", OP_WRITE));
@@ -120,8 +123,9 @@ static void gradients(const Mesh &m, bool needed, op_dat prim, op_dat grad) {
 }
 
 // Interior and boundary fluxes, then the SA source, into a cleared residual;
-// none in the components the viscous scheme enforces.
-static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res) {
+// none in the components the viscous scheme enforces. force, if given, takes
+// the flow's force on the no-slip walls first.
+static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res, double *force = nullptr) {
   op_par_loop(zero_var_kernel, "zero_var_kernel", m.nodes,
               op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
 
@@ -158,6 +162,25 @@ static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res) {
               op_arg_dat(res, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_dat(res, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_dat(res, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
+  if (op2_include_viscous)
+    op_par_loop(symmetry_stress_kernel, "symmetry_stress_kernel", m.bfaces,
+                op_arg_dat(m.bface_type, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(m.bface_normal, -1, OP_ID, 3, "double", OP_READ),
+                op_arg_dat(m.bface_area, -1, OP_ID, 1, "double", OP_READ),
+                op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(m.bface_shares, -1, OP_ID, 12, "double", OP_READ),
+                op_arg_dat(prim, 0, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 1, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 2, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 3, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(grad, 0, m.bface_to_nodes, NGRAD_OP2, "double", OP_READ),
+                op_arg_dat(grad, 1, m.bface_to_nodes, NGRAD_OP2, "double", OP_READ),
+                op_arg_dat(grad, 2, m.bface_to_nodes, NGRAD_OP2, "double", OP_READ),
+                op_arg_dat(grad, 3, m.bface_to_nodes, NGRAD_OP2, "double", OP_READ),
+                op_arg_dat(res, 0, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
+                op_arg_dat(res, 1, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
+                op_arg_dat(res, 2, m.bface_to_nodes, NVAR_OP2, "double", OP_INC),
+                op_arg_dat(res, 3, m.bface_to_nodes, NVAR_OP2, "double", OP_INC));
 
   op_par_loop(sa_source_kernel, "sa_source_kernel", m.nodes,
               op_arg_dat(prim, -1, OP_ID, NPRIM_OP2, "double", OP_READ),
@@ -165,6 +188,23 @@ static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res) {
               op_arg_dat(m.node_wall_distance, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_RW));
+
+  if (force != nullptr) {
+    force[0] = force[1] = force[2] = 0.0;
+    op_par_loop(wall_pressure_force_kernel, "wall_pressure_force_kernel", m.bfaces,
+                op_arg_dat(m.bface_type, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(m.bface_num_nodes, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(m.bface_shares, -1, OP_ID, 12, "double", OP_READ),
+                op_arg_dat(prim, 0, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 1, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 2, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 3, m.bface_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_gbl(force, 3, "double", OP_INC));
+    op_par_loop(wall_force_kernel, "wall_force_kernel", m.bnodes,
+                op_arg_dat(m.bnode_wall, -1, OP_ID, 1, "int", OP_READ),
+                op_arg_dat(res, 0, m.bnode_to_node, NVAR_OP2, "double", OP_READ),
+                op_arg_gbl(force, 3, "double", OP_INC));
+  }
 
   op_par_loop(zero_constrained_kernel, "zero_constrained_kernel", m.nodes,
               op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
@@ -236,7 +276,28 @@ struct Implicit {
   op_mat A;
   int terms;
   double cfl;
+  // Dual time stepping: the two earlier time levels and c0, c1, c2 over the
+  // time step (all 0 when steady).
+  op_dat qn, qnm1;
+  double physical[3];
 };
+
+// The residual of the implicit scheme at state q: flux_residual's, and in dual
+// time stepping the physical term (unsteady_residual_kernel).
+static void implicit_residual(Implicit &c, op_dat q, op_dat prim, op_dat grad, op_dat res,
+                              double *force = nullptr) {
+  const Mesh &m = *c.m;
+  flux_residual(m, prim, grad, res, force);
+  if (c.qn == NULL) return;
+  op_par_loop(unsteady_residual_kernel, "unsteady_residual_kernel", m.nodes,
+              op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
+              op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
+              op_arg_gbl(c.physical, 3, "double", OP_READ),
+              op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+              op_arg_dat(c.qn, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+              op_arg_dat(c.qnm1, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+              op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_RW));
+}
 
 // The first-order Jacobian, or its components' blocks alone (decoupled),
 // into M's storage in the solver library.
@@ -285,6 +346,7 @@ static void assemble_jacobian(Implicit &c, op_mat M, op_dat prim, op_dat grad, i
               op_arg_dat(m.node_wall_distance, -1, OP_ID, 1, "double", OP_READ),
               op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
               op_arg_gbl(&c.cfl, 1, "double", OP_READ),
+              op_arg_gbl(c.physical, 1, "double", OP_READ),
               op_arg_gbl(&decoupled, 1, "int", OP_READ),
               op_arg_mat(M, -1, OP_ID, -1, OP_ID, NVAR_OP2, "double", OP_INC));
   op_mat_assemble(M);
@@ -352,7 +414,7 @@ static void matfree(op_dat x, op_dat y, void *ctx) {
               op_arg_dat(c->q_pert, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
   to_primitive(m, c->q_pert, c->prim_pert);
   gradients(m, c->full_gradients, c->prim_pert, c->grad_pert);
-  flux_residual(m, c->prim_pert, c->grad_pert, c->res_pert);
+  implicit_residual(*c, c->q_pert, c->prim_pert, c->grad_pert, c->res_pert);
   op_par_loop(matfree_combine_kernel, "matfree_combine_kernel", m.nodes,
               op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
               op_arg_dat(c->spectral, -1, OP_ID, 1, "double", OP_READ),
@@ -407,6 +469,7 @@ int main(int argc, char **argv) {
     op2_rho_floor = cfg.rho_floor;
     op2_p_floor = cfg.p_floor;
     op2_second_order = cfg.second_order;
+    op2_limiter = cfg.limiter;
     op2_include_viscous = cfg.include_viscous;
     op2_include_sa = cfg.include_sa;
     op2_outlet_backflow = cfg.outlet_backflow == "freestream";
@@ -437,6 +500,7 @@ int main(int argc, char **argv) {
     op_decl_const(1, "double", &op2_rho_floor);
     op_decl_const(1, "double", &op2_p_floor);
     op_decl_const(1, "int", &op2_second_order);
+    op_decl_const(1, "int", &op2_limiter);
     op_decl_const(1, "int", &op2_include_viscous);
     op_decl_const(1, "int", &op2_include_sa);
     op_decl_const(1, "int", &op2_outlet_backflow);
@@ -481,14 +545,16 @@ int main(int argc, char **argv) {
       op_renumber(m.edge_to_nodes);
     }
 
-    op_dat q = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "q");
+    op_dat q = cfg.restart_file.empty()
+                   ? op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "q")
+                   : op_decl_dat_hdf5(m.nodes, NVAR_OP2, "double", cfg.restart_file.c_str(), "q");
     op_dat q0 = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "q0");
     op_dat prim = op_decl_dat_temp_char(m.nodes, NPRIM_OP2, "double", sizeof(double), "primitive");
     op_dat res = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "residual");
     op_dat spectral = op_decl_dat_temp_char(m.nodes, 1, "double", sizeof(double), "spectral");
     op_dat dt = op_decl_dat_temp_char(m.nodes, 1, "double", sizeof(double), "dt");
     op_dat grad = op_decl_dat_temp_char(m.nodes, NGRAD_OP2, "double", sizeof(double), "grad");
-    const bool full_gradients = cfg.second_order || cfg.include_sa;
+    const bool full_gradients = cfg.second_order || cfg.include_viscous || cfg.include_sa;
 
     // Which components each node's boundary entries fix.
     m.node_bc = op_decl_dat_temp_char(m.nodes, 2, "int", sizeof(int), "node_bc");
@@ -539,8 +605,9 @@ int main(int argc, char **argv) {
     }
 
     if (op_is_root()) std::cout << "[phase] initialize\n";
-    op_par_loop(initialize_q_kernel, "initialize_q_kernel", m.nodes,
-                op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+    if (cfg.restart_file.empty())
+      op_par_loop(initialize_q_kernel, "initialize_q_kernel", m.nodes,
+                  op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
 
     double initial_l2_rho = -1.0;
     std::vector<double> history_l2_rho;
@@ -560,6 +627,11 @@ int main(int argc, char **argv) {
     op_timers(&cpu, &wall_t1);
 
     // The implicit scheme starts from the residual at the initial state.
+    const bool unsteady = implicit && cfg.time_step > 0.0;
+    if (unsteady) {
+      imp.qn = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "qn");
+      imp.qnm1 = op_decl_dat_temp_char(m.nodes, NVAR_OP2, "double", sizeof(double), "qnm1");
+    }
     if (implicit) {
       enforce_boundary(m, q);
       to_primitive(m, q, prim);
@@ -567,112 +639,201 @@ int main(int argc, char **argv) {
       flux_residual(m, prim, grad, res);
     }
 
-    op_profile_start("nssolver_op2");
-    for (int iter = 0; iter < cfg.iterations; ++iter) {
-      int its = 0;
-      double linear_residual = 0.0;
-      int rejected = 0;
-      if (!implicit) {
-        enforce_boundary(m, q);
+    // Dual time stepping's record: each step's wall force and inner iterations.
+    std::ofstream history;
+    std::filesystem::path stem(cfg.output_file);
+    stem.replace_extension();
+    if (unsteady && op_is_root()) {
+      if (stem.has_parent_path()) std::filesystem::create_directories(stem.parent_path());
+      history.open(stem.string() + ".history.csv");
+      history << "step,time,fx,fy,fz,inner_iterations,inner_reduction,linear_iterations\n";
+      history.precision(12);
+    }
 
-        // Save the RK baseline state used by all four stages.
+    op_profile_start("nssolver_op2");
+    const int steps = unsteady ? cfg.physical_steps : 1;
+    const int inner_max = unsteady ? cfg.inner_iterations : cfg.iterations;
+    long long count = 0;
+    for (int step = 0; step < steps; ++step) {
+      double step_l2_0 = -1.0;
+      long long step_its = 0;
+      if (unsteady) {
+        // q^n-1 <- q^n, q^n <- q, and the step's coefficients: first order on
+        // the first step, which has no q^n-1.
+        if (step > 0)
+          op_par_loop(copy_q_kernel, "copy_q_kernel", m.nodes,
+                      op_arg_dat(imp.qn, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                      op_arg_dat(imp.qnm1, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
         op_par_loop(copy_q_kernel, "copy_q_kernel", m.nodes,
                     op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
-                    op_arg_dat(q0, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+                    op_arg_dat(imp.qn, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+        const bool second = cfg.time_order == 2 && step > 0;
+        imp.physical[0] = (second ? 1.5 : 1.0) / cfg.time_step;
+        imp.physical[1] = (second ? 2.0 : 1.0) / cfg.time_step;
+        imp.physical[2] = (second ? 0.5 : 0.0) / cfg.time_step;
+        if (step == 0)
+          op_par_loop(copy_q_kernel, "copy_q_kernel", m.nodes,
+                      op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                      op_arg_dat(imp.qnm1, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+        implicit_residual(imp, q, prim, grad, res);
+      }
+      int iter = 0;
+      for (; iter < inner_max; ++iter) {
+        int its = 0;
+        double linear_residual = 0.0;
+        int rejected = 0;
+        if (!implicit) {
+          enforce_boundary(m, q);
 
-        // Primitives once per nonlinear iteration feed gradients, timestep
-        // estimates, and all edge and boundary flux kernels.
-        to_primitive(m, q, prim);
-        gradients(m, full_gradients, prim, grad);
-        local_time_step(m, prim, cfg.cfl, spectral, dt);
+          // Save the RK baseline state used by all four stages.
+          op_par_loop(copy_q_kernel, "copy_q_kernel", m.nodes,
+                      op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                      op_arg_dat(q0, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
 
-        for (int stage = 0; stage < 4; ++stage) {
-          // Reapply boundary constraints at the start of every RK stage so the
-          // stage residual is assembled from a consistent boundary state.
+          // Primitives once per nonlinear iteration feed gradients, timestep
+          // estimates, and all edge and boundary flux kernels.
+          to_primitive(m, q, prim);
+          gradients(m, full_gradients, prim, grad);
+          local_time_step(m, prim, cfg.cfl, spectral, dt);
+
+          for (int stage = 0; stage < 4; ++stage) {
+            // Reapply boundary constraints at the start of every RK stage so the
+            // stage residual is assembled from a consistent boundary state.
+            enforce_boundary(m, q);
+            to_primitive(m, q, prim);
+            flux_residual(m, prim, grad, res);
+
+            // Advance one stage of the classical four-stage explicit RK scheme.
+            op_par_loop(rk_update_kernel, "rk_update_kernel", m.nodes,
+                        op_arg_gbl(&stage, 1, "int", OP_READ),
+                        op_arg_dat(dt, -1, OP_ID, 1, "double", OP_READ),
+                        op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
+                        op_arg_dat(q0, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                        op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                        op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
+
+            // Leave the stage in an enforced state so the next stage starts from
+            // physically admissible wall and slip values.
+            enforce_boundary(m, q);
+          }
+
+          // Reassemble the final residual for convergence monitoring from the
+          // converged state at the end of the full RK iteration.
           enforce_boundary(m, q);
           to_primitive(m, q, prim);
           flux_residual(m, prim, grad, res);
+        } else {
+          // One pseudo-time step: (V / dt + dR/dq) dq = -R about the current
+          // state, whose primitives, gradients and residual are current.
+          imp.cfl = std::min(cfl_max, cfg.implicit_cfl * std::pow(cfg.implicit_cfl_growth, iter));
+          local_time_step(m, prim, imp.cfl, spectral, dt);
+          if (iter % cfg.jacobian_interval == 0) {
+            double t0 = wall_time();
+            assemble_jacobian(imp, imp.A, prim, grad, 0);
+            if (P != NULL) assemble_jacobian(imp, P, prim, grad, 1);
+            if (cfg.pc != "lib")
+              op_par_loop(invert_block_kernel, "invert_block_kernel", m.nodes,
+                          op_arg_mat(imp.A, -1, OP_ID, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                          op_arg_dat(imp.dinv, -1, OP_ID, NBLOCK_OP2, "double", OP_WRITE));
+            double t1 = wall_time();
+            assembly_time += t1 - t0;
+          }
 
-          // Advance one stage of the classical four-stage explicit RK scheme.
-          op_par_loop(rk_update_kernel, "rk_update_kernel", m.nodes,
-                      op_arg_gbl(&stage, 1, "int", OP_READ),
-                      op_arg_dat(dt, -1, OP_ID, 1, "double", OP_READ),
-                      op_arg_dat(m.node_volume, -1, OP_ID, 1, "double", OP_READ),
-                      op_arg_dat(q0, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+          op_par_loop(implicit_rhs_kernel, "implicit_rhs_kernel", m.nodes,
+                      op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
                       op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_READ),
-                      op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
-
-          // Leave the stage in an enforced state so the next stage starts from
-          // physically admissible wall and slip values.
-          enforce_boundary(m, q);
-        }
-
-        // Reassemble the final residual for convergence monitoring from the
-        // converged state at the end of the full RK iteration.
-        enforce_boundary(m, q);
-        to_primitive(m, q, prim);
-        flux_residual(m, prim, grad, res);
-      } else {
-        // One pseudo-time step: (V / dt + dR/dq) dq = -R about the current
-        // state, whose primitives, gradients and residual are current.
-        imp.cfl = std::min(cfl_max, cfg.implicit_cfl * std::pow(cfg.implicit_cfl_growth, iter));
-        local_time_step(m, prim, imp.cfl, spectral, dt);
-        if (iter % cfg.jacobian_interval == 0) {
+                      op_arg_dat(rhs, -1, OP_ID, NVAR_OP2, "double", OP_WRITE),
+                      op_arg_dat(dq, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
           double t0 = wall_time();
-          assemble_jacobian(imp, imp.A, prim, grad, 0);
-          if (P != NULL) assemble_jacobian(imp, P, prim, grad, 1);
-          if (cfg.pc != "lib")
-            op_par_loop(invert_block_kernel, "invert_block_kernel", m.nodes,
-                        op_arg_mat(imp.A, -1, OP_ID, -1, OP_ID, NVAR_OP2, "double", OP_READ),
-                        op_arg_dat(imp.dinv, -1, OP_ID, NBLOCK_OP2, "double", OP_WRITE));
-          double t1 = wall_time();
-          assembly_time += t1 - t0;
+          if (!op_solve(solver, rhs, dq)) unconverged_solves++;
+          solve_time += wall_time() - t0;
+          op_solver_stats(solver, &its, &linear_residual);
+          if (cfg.dump_interval > 0 && (count + 1) % cfg.dump_interval == 0) {
+            char suffix[32];
+            snprintf(suffix, sizeof suffix, "_%06lld.h5", count + 1);
+            const std::string file = cfg.dump_prefix + suffix;
+            const std::filesystem::path parent = std::filesystem::path(file).parent_path();
+            if (!parent.empty()) std::filesystem::create_directories(parent);
+            op_mat_write_hdf5(imp.A, file.c_str());
+            op_fetch_data_hdf5_file_path(rhs, file.c_str(), "A/b");
+            op_fetch_data_hdf5_file_path(dq, file.c_str(), "A/x");
+            if (op_is_root()) {
+              const std::string index = cfg.dump_prefix + "_index.csv";
+              const bool fresh = !std::filesystem::exists(index) || count + 1 == cfg.dump_interval;
+              std::ofstream out(index, fresh ? std::ios::trunc : std::ios::app);
+              if (fresh) out << "iteration,cfl,linear_iterations,linear_residual,file\n";
+              out << count + 1 << "," << imp.cfl << "," << its << "," << linear_residual << "," << file << "\n";
+              std::cout << "[dump] " << file << "\n";
+            }
+          }
+          linear_iterations += its;
+
+          double relax = cfg.implicit_relax;
+          op_par_loop(implicit_update_kernel, "implicit_update_kernel", m.nodes,
+                      op_arg_dat(dq, -1, OP_ID, NVAR_OP2, "double", OP_READ),
+                      op_arg_gbl(&relax, 1, "double", OP_READ),
+                      op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_RW),
+                      op_arg_gbl(&rejected, 1, "int", OP_INC));
+          rejected_total += rejected;
+
+          // The new state's residual: monitored, and the next step's.
+          enforce_boundary(m, q);
+          to_primitive(m, q, prim);
+          gradients(m, full_gradients, prim, grad);
+          implicit_residual(imp, q, prim, grad, res);
         }
 
-        op_par_loop(implicit_rhs_kernel, "implicit_rhs_kernel", m.nodes,
-                    op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_READ),
-                    op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_READ),
-                    op_arg_dat(rhs, -1, OP_ID, NVAR_OP2, "double", OP_WRITE),
-                    op_arg_dat(dq, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
-        double t0 = wall_time();
-        if (!op_solve(solver, rhs, dq)) unconverged_solves++;
-        solve_time += wall_time() - t0;
-        op_solver_stats(solver, &its, &linear_residual);
-        linear_iterations += its;
+        // Reduce the assembled residual field to scalar convergence metrics.
+        ResidualNorms norms = residual_norms(m, res);
+        history_l2_rho.push_back(norms.l2_rho);
+        history_l2_rhoE.push_back(norms.l2_rhoE);
+        history_linf_rho.push_back(norms.linf_rho);
+        if (initial_l2_rho < 0.0) initial_l2_rho = norms.l2_rho;
 
-        double relax = cfg.implicit_relax;
-        op_par_loop(implicit_update_kernel, "implicit_update_kernel", m.nodes,
-                    op_arg_dat(dq, -1, OP_ID, NVAR_OP2, "double", OP_READ),
-                    op_arg_gbl(&relax, 1, "double", OP_READ),
-                    op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_RW),
-                    op_arg_gbl(&rejected, 1, "int", OP_INC));
-        rejected_total += rejected;
-
-        // The new state's residual: monitored, and the next step's.
-        enforce_boundary(m, q);
-        to_primitive(m, q, prim);
-        gradients(m, full_gradients, prim, grad);
-        flux_residual(m, prim, grad, res);
+        step_its += its;
+        if (step_l2_0 < 0.0) step_l2_0 = norms.l2_rho;
+        const bool inner_done = unsteady && norms.l2_rho <= cfg.inner_tolerance * step_l2_0;
+        const bool should_print = !unsteady && (iter == 0 || iter + 1 == cfg.iterations ||
+                                                ((iter + 1) % std::max(cfg.progress_interval, 1) == 0));
+        if (should_print && op_is_root()) {
+          std::cout << "[progress] iter " << (iter + 1) << "/" << cfg.iterations
+                    << " | L2(rho)=" << norms.l2_rho
+                    << " | L2/L2_0=" << (initial_l2_rho > 0.0 ? norms.l2_rho / initial_l2_rho : 1.0)
+                    << " | Linf(rho)=" << norms.linf_rho;
+          if (implicit)
+            std::cout << " | CFL=" << imp.cfl << " | linear its=" << its << " res=" << linear_residual
+                      << (rejected ? " | rejected=" + std::to_string(rejected) : "");
+          std::cout << "\n";
+        }
+        ++count;
+        if (inner_done) {
+          ++iter;
+          break;
+        }
       }
 
-      // Reduce the assembled residual field to scalar convergence metrics.
-      ResidualNorms norms = residual_norms(m, res);
-      history_l2_rho.push_back(norms.l2_rho);
-      history_l2_rhoE.push_back(norms.l2_rhoE);
-      history_linf_rho.push_back(norms.linf_rho);
-      if (initial_l2_rho < 0.0) initial_l2_rho = norms.l2_rho;
-
-      const bool should_print = (iter == 0 || iter + 1 == cfg.iterations ||
-                                 ((iter + 1) % std::max(cfg.progress_interval, 1) == 0));
-      if (should_print && op_is_root()) {
-        std::cout << "[progress] iter " << (iter + 1) << "/" << cfg.iterations
-                  << " | L2(rho)=" << norms.l2_rho
-                  << " | L2/L2_0=" << (initial_l2_rho > 0.0 ? norms.l2_rho / initial_l2_rho : 1.0)
-                  << " | Linf(rho)=" << norms.linf_rho;
-        if (implicit)
-          std::cout << " | CFL=" << imp.cfl << " | linear its=" << its << " res=" << linear_residual
-                    << (rejected ? " | rejected=" + std::to_string(rejected) : "");
-        std::cout << "\n";
+      if (unsteady) {
+        // The converged step's wall force, from its spatial residual.
+        double force[3];
+        implicit_residual(imp, q, prim, grad, res, force);
+        const double reduction = step_l2_0 > 0.0 ? history_l2_rho.back() / step_l2_0 : 1.0;
+        if (op_is_root()) {
+          history << step + 1 << "," << (step + 1) * cfg.time_step << "," << force[0] << "," << force[1] << ","
+                  << force[2] << "," << iter << "," << reduction << "," << step_its << "\n";
+          history.flush();
+          if (step == 0 || step + 1 == steps || (step + 1) % std::max(cfg.progress_interval, 1) == 0)
+            std::cout << "[step] " << step + 1 << "/" << steps << " | t=" << (step + 1) * cfg.time_step
+                      << " | inner its=" << iter << " | reduction=" << reduction << " | linear its=" << step_its
+                      << " | force=(" << force[0] << ", " << force[1] << ", " << force[2] << ")\n";
+        }
+        if (cfg.snapshot_interval > 0 && (step + 1) % cfg.snapshot_interval == 0) {
+          char suffix[32];
+          snprintf(suffix, sizeof suffix, "_%06d.h5", step + 1);
+          const std::string file = stem.string() + suffix;
+          if (op_is_root()) std::filesystem::remove(file);
+          op_fetch_data_hdf5_file(q, file.c_str());
+          op_fetch_data_hdf5_file(prim, file.c_str());
+        }
       }
     }
 
@@ -692,6 +853,7 @@ int main(int argc, char **argv) {
     q->name = strdup("q");
     prim->name = strdup("primitive");
     dt->name = strdup("dt");
+    res->name = strdup("residual");
     std::filesystem::path output_path(cfg.output_file);
     if (output_path.has_parent_path()) {
       std::filesystem::create_directories(output_path.parent_path());
@@ -701,6 +863,7 @@ int main(int argc, char **argv) {
     op_fetch_data_hdf5_file(q, cfg.output_file.c_str());
     op_fetch_data_hdf5_file(prim, cfg.output_file.c_str());
     op_fetch_data_hdf5_file(dt, cfg.output_file.c_str());
+    op_fetch_data_hdf5_file(res, cfg.output_file.c_str());
     std::filesystem::path residual_path(cfg.output_file);
     residual_path.replace_extension(".residual.csv");
     write_residual_history_csv_op2(residual_path.string(), history_l2_rho, history_l2_rhoE, history_linf_rho);

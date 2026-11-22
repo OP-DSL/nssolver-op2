@@ -14,3 +14,5 @@ static constexpr int BTYPE_INLET = 1;
 static constexpr int BTYPE_OUTLET = 2;
 static constexpr int BTYPE_SLIPWALL = 3;
 static constexpr int BTYPE_NOSLIPWALL = 4;
+static constexpr int BTYPE_CHARACTERISTIC = 5;
+static constexpr int BTYPE_TOTAL_INLET = 6;

@@ -19,6 +19,7 @@ struct SolverConfig {
   double cfl = 0.1;
   int progress_interval = 10;
   int second_order = 0;
+  int limiter = 1;  // second order: the edge-local limiter, 0 unlimited
   int include_viscous = 0;
   int include_sa = 0;
   double gamma = 1.4;
@@ -41,6 +42,21 @@ struct SolverConfig {
   double implicit_relax = 1.0;
   int jacobian_interval = 1;
 
+  // Dual time stepping (implicit, time_step > 0): physical_steps steps of
+  // time_step, each solving R(q) + V (c0 q - c1 q^n + c2 q^n-1) / time_step = 0
+  // by up to inner_iterations pseudo-time iterations (the CFL ramp restarted)
+  // until the residual falls by inner_tolerance; second-order backward
+  // differences (time_order 2) after a first-order first step. restart_file
+  // starts from a solution's q, snapshot_interval writes one every that many
+  // steps, and output_file's .history.csv has the wall force of each step.
+  double time_step = 0.0;
+  int physical_steps = 0;
+  int inner_iterations = 20;
+  double inner_tolerance = 1.0e-3;
+  int time_order = 2;
+  std::string restart_file;
+  int snapshot_interval = 0;
+
   // The linear solves, as the OP2 implicit proxy (apps/c/implicit) takes them:
   // the solver layer's JSON (solve_config; OP_SOLVE_CONFIG over it), the
   // library's preconditioner or a par-loop one (pc: lib, bjacobi, neumann with
@@ -52,6 +68,13 @@ struct SolverConfig {
   int terms = 2;
   std::string pmat = "A";
   std::string op = "assembled";
+
+  // Every dump_interval-th implicit iteration (0: never) writes the linear
+  // system it solved, as dump_prefix_<iteration>.h5 (matrix A, right-hand
+  // side A/b, solution A/x: apps/c/solve_hdf5 solves it again), and a line
+  // to dump_prefix_index.csv.
+  int dump_interval = 0;
+  std::string dump_prefix = "outputs-op2/system";
 
   // Run: partitioner (kway, random, inertial), renumbering each rank's mesh
   // (reorder), OP2's diagnostics level and timing output, and a check that
@@ -76,6 +99,7 @@ inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const 
   else if (key == "cfl") cfg.cfl = std::stod(value);
   else if (key == "progress_interval") cfg.progress_interval = std::stoi(value);
   else if (key == "second_order") cfg.second_order = std::stoi(value);
+  else if (key == "limiter") cfg.limiter = std::stoi(value);
   else if (key == "include_viscous") cfg.include_viscous = std::stoi(value);
   else if (key == "include_sa") cfg.include_sa = std::stoi(value);
   else if (key == "gamma") cfg.gamma = std::stod(value);
@@ -96,10 +120,19 @@ inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const 
   else if (key == "implicit_relax") cfg.implicit_relax = std::stod(value);
   else if (key == "jacobian_interval") cfg.jacobian_interval = std::stoi(value);
   else if (key == "solve_config") cfg.solve_config = value;
+  else if (key == "time_step") cfg.time_step = std::stod(value);
+  else if (key == "physical_steps") cfg.physical_steps = std::stoi(value);
+  else if (key == "inner_iterations") cfg.inner_iterations = std::stoi(value);
+  else if (key == "inner_tolerance") cfg.inner_tolerance = std::stod(value);
+  else if (key == "time_order") cfg.time_order = std::stoi(value);
+  else if (key == "restart_file") cfg.restart_file = value;
+  else if (key == "snapshot_interval") cfg.snapshot_interval = std::stoi(value);
   else if (key == "pc") cfg.pc = value;
   else if (key == "terms") cfg.terms = std::stoi(value);
   else if (key == "pmat") cfg.pmat = value;
   else if (key == "op") cfg.op = value;
+  else if (key == "dump_interval") cfg.dump_interval = std::stoi(value);
+  else if (key == "dump_prefix") cfg.dump_prefix = value;
   else if (key == "partition") cfg.partition = value;
   else if (key == "reorder") cfg.reorder = std::stoi(value);
   else if (key == "diags") cfg.diags = std::stoi(value);
@@ -123,8 +156,12 @@ inline void validate_config(const SolverConfig &cfg) {
   one_of("pmat", cfg.pmat, {"A", "decoupled"});
   one_of("op", cfg.op, {"assembled", "matfree"});
   one_of("partition", cfg.partition, {"kway", "random", "inertial"});
+  if (cfg.dump_interval < 0) throw std::runtime_error("config: dump_interval must not be negative");
   if (cfg.jacobian_interval < 1) throw std::runtime_error("config: jacobian_interval must be at least 1");
   if (cfg.implicit_cfl <= 0.0) throw std::runtime_error("config: implicit_cfl must be positive");
+  if (cfg.time_step > 0.0 && cfg.time_scheme != "implicit")
+    throw std::runtime_error("config: time_step needs time_scheme = implicit");
+  if (cfg.time_order != 1 && cfg.time_order != 2) throw std::runtime_error("config: time_order must be 1 or 2");
 }
 
 inline std::string trim_copy(std::string value) {
