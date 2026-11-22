@@ -19,7 +19,7 @@ struct SolverConfig {
   double cfl = 0.1;
   int progress_interval = 10;
   int second_order = 0;
-  int limiter = 1;  // second order: the edge-local limiter, 0 unlimited
+  int limiter = 1;  // second order: 1 the edge-local limiter, 2 van Albada's, 0 none
   int include_viscous = 0;
   int include_sa = 0;
   double gamma = 1.4;
@@ -40,6 +40,7 @@ struct SolverConfig {
   double implicit_cfl_max = 0.0;    // implicit_cfl when 0
   double implicit_cfl_growth = 1.0;
   double implicit_relax = 1.0;
+  double update_limit = 0.0;  // > 0: at most this relative change of rho and p per node and iteration
   int jacobian_interval = 1;
 
   // Dual time stepping (implicit, time_step > 0): physical_steps steps of
@@ -118,6 +119,7 @@ inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const 
   else if (key == "implicit_cfl_max") cfg.implicit_cfl_max = std::stod(value);
   else if (key == "implicit_cfl_growth") cfg.implicit_cfl_growth = std::stod(value);
   else if (key == "implicit_relax") cfg.implicit_relax = std::stod(value);
+  else if (key == "update_limit") cfg.update_limit = std::stod(value);
   else if (key == "jacobian_interval") cfg.jacobian_interval = std::stoi(value);
   else if (key == "solve_config") cfg.solve_config = value;
   else if (key == "time_step") cfg.time_step = std::stod(value);

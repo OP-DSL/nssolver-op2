@@ -16,8 +16,6 @@
 
 static constexpr int NBLOCK_OP2 = NVAR_OP2 * NVAR_OP2;
 
-extern double op2_scale[6];
-
 // The step of the one-sided differences in component c of the state q.
 inline double jacobian_step_op2(const double *q, int c) {
   return 1.0e-7 * fmax(fabs(q[c]), op2_scale[c]);
@@ -240,10 +238,23 @@ inline void implicit_rhs_kernel(const int *bc, const double *res, double *b, dou
 }
 
 // q += relax S dq, kept where the result is admissible as the explicit
-// update's.
-inline void implicit_update_kernel(const double *dq, const double *relax, double *q, int *rejected) {
+// update's (the pressure change from a scaled update is only an estimate,
+// rho e being nonlinear in it: the floors still catch the rest).
+inline void implicit_update_kernel(const double *dq, const double *relax, const double *limit, double *q,
+                                   int *rejected) {
+  // With limit > 0 the node's update is scaled so that its density and
+  // pressure change by at most that fraction.
+  double factor = relax[0];
+  if (limit[0] > 0.0) {
+    double trial[NVAR_OP2], p_old[NPRIM_OP2], p_new[NPRIM_OP2];
+    for (int m = 0; m < NVAR_OP2; ++m) trial[m] = q[m] + factor * op2_scale[m] * dq[m];
+    conservative_to_primitive_op2(q, p_old);
+    conservative_to_primitive_op2(trial, p_new);
+    const double change = fmax(fabs(trial[0] - q[0]) / p_old[0], fabs(p_new[4] - p_old[4]) / p_old[4]);
+    if (change > limit[0]) factor *= limit[0] / change;
+  }
   double q_new[NVAR_OP2];
-  for (int m = 0; m < NVAR_OP2; ++m) q_new[m] = q[m] + relax[0] * op2_scale[m] * dq[m];
+  for (int m = 0; m < NVAR_OP2; ++m) q_new[m] = q[m] + factor * op2_scale[m] * dq[m];
   cleanup_conservative_op2(q_new);
   double prim[NPRIM_OP2];
   conservative_to_primitive_op2(q_new, prim);

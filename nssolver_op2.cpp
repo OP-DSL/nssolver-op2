@@ -772,6 +772,7 @@ int main(int argc, char **argv) {
           op_par_loop(implicit_update_kernel, "implicit_update_kernel", m.nodes,
                       op_arg_dat(dq, -1, OP_ID, NVAR_OP2, "double", OP_READ),
                       op_arg_gbl(&relax, 1, "double", OP_READ),
+                      op_arg_gbl(&cfg.update_limit, 1, "double", OP_READ),
                       op_arg_dat(q, -1, OP_ID, NVAR_OP2, "double", OP_RW),
                       op_arg_gbl(&rejected, 1, "int", OP_INC));
           rejected_total += rejected;
@@ -793,8 +794,10 @@ int main(int argc, char **argv) {
         step_its += its;
         if (step_l2_0 < 0.0) step_l2_0 = norms.l2_rho;
         const bool inner_done = unsteady && norms.l2_rho <= cfg.inner_tolerance * step_l2_0;
-        const bool should_print = !unsteady && (iter == 0 || iter + 1 == cfg.iterations ||
-                                                ((iter + 1) % std::max(cfg.progress_interval, 1) == 0));
+        // Dual time stepping prints its inner iterations only at progress_interval 1.
+        const bool should_print = unsteady ? cfg.progress_interval == 1
+                                           : (iter == 0 || iter + 1 == cfg.iterations ||
+                                              ((iter + 1) % std::max(cfg.progress_interval, 1) == 0));
         if (should_print && op_is_root()) {
           std::cout << "[progress] iter " << (iter + 1) << "/" << cfg.iterations
                     << " | L2(rho)=" << norms.l2_rho

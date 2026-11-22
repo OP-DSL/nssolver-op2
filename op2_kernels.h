@@ -36,6 +36,8 @@ extern int op2_limiter;
 extern int op2_include_viscous;
 extern int op2_include_sa;
 extern int op2_outlet_backflow;
+// The reference state (rho, rho a, rho a, rho a, rho a^2, rho nu) of the free stream.
+extern double op2_scale[6];
 
 inline double cv_op2() { return op2_gas_constant / (op2_gamma - 1.0); }
 
@@ -351,6 +353,29 @@ inline void reconstruct_primitive_op2(const double *prim, const double *grad, co
   out[4] = fmax(out[4], 1.0e-12);
 }
 
+// The half-edge increments of a node's primitives toward its neighbour, by
+// van Albada's limiter: each of the gradient's projection u and the edge's
+// half difference e blend smoothly into (u (e^2 + eps^2) + e (u^2 + eps^2)) /
+// (u^2 + e^2 + 2 eps^2), u where they agree, toward 0 where they differ in
+// sign. eps is 1% of the free stream's density, speed of sound and pressure:
+// differentiable where the edge limiter's minimum switches and holds Newton's
+// iterations in a cycle.
+inline void van_albada_reconstruct_op2(const double *prim, const double *neighbour, const double *grad,
+                                       const double *delta_r, double *out) {
+  const double rho = op2_scale[0];
+  const double a = op2_scale[1] / op2_scale[0];
+  const double scale[NPRIM_OP2] = {rho, a, a, a, op2_scale[4], 1.0};
+  for (int m = 0; m < NPRIM_OP2; ++m) {
+    const int base = 3 * m;
+    const double u = grad[base + 0] * delta_r[0] + grad[base + 1] * delta_r[1] + grad[base + 2] * delta_r[2];
+    const double e = 0.5 * (neighbour[m] - prim[m]);
+    const double eps2 = 1.0e-4 * scale[m] * scale[m];
+    out[m] = prim[m] + (u * (e * e + eps2) + e * (u * u + eps2)) / (u * u + e * e + 2.0 * eps2);
+  }
+  out[0] = fmax(out[0], 1.0e-12);
+  out[4] = fmax(out[4], 1.0e-12);
+}
+
 // The boundary state of a Riemann far field: the invariants un +- 2a/(gamma -
 // 1) along the outward normal, the outgoing one from the interior and the
 // incoming one from the free stream, and the tangential velocity, entropy and
@@ -610,10 +635,15 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
   if (op2_second_order) {
     const double delta_lr[3] = {0.5 * (coord_r[0] - coord_l[0]), 0.5 * (coord_r[1] - coord_l[1]), 0.5 * (coord_r[2] - coord_l[2])};
     const double delta_rl[3] = {-delta_lr[0], -delta_lr[1], -delta_lr[2]};
-    const double phi_l = op2_limiter ? edge_limiter_scale_op2(prim_l_center, prim_r_center, grad_l, delta_lr) : 1.0;
-    const double phi_r = op2_limiter ? edge_limiter_scale_op2(prim_r_center, prim_l_center, grad_r, delta_rl) : 1.0;
-    reconstruct_primitive_op2(prim_l_center, grad_l, delta_lr, phi_l, prim_l);
-    reconstruct_primitive_op2(prim_r_center, grad_r, delta_rl, phi_r, prim_r);
+    if (op2_limiter == 2) {
+      van_albada_reconstruct_op2(prim_l_center, prim_r_center, grad_l, delta_lr, prim_l);
+      van_albada_reconstruct_op2(prim_r_center, prim_l_center, grad_r, delta_rl, prim_r);
+    } else {
+      const double phi_l = op2_limiter ? edge_limiter_scale_op2(prim_l_center, prim_r_center, grad_l, delta_lr) : 1.0;
+      const double phi_r = op2_limiter ? edge_limiter_scale_op2(prim_r_center, prim_l_center, grad_r, delta_rl) : 1.0;
+      reconstruct_primitive_op2(prim_l_center, grad_l, delta_lr, phi_l, prim_l);
+      reconstruct_primitive_op2(prim_r_center, grad_r, delta_rl, phi_r, prim_r);
+    }
     // First-order advection of nu_tilde, as the SA reference solutions use.
     prim_l[IDX_NU] = prim_l_center[IDX_NU];
     prim_r[IDX_NU] = prim_r_center[IDX_NU];
@@ -707,9 +737,12 @@ inline void boundary_flux_kernel(const int *btype, const double *normal, const d
   }
 }
 
-// A slip wall, a symmetry plane, takes the viscous normal stress n.tau.n of
-// each node's gradient through its sub-face: it balances the interior edges'
-// (the -2/3 mu div u among it), as no shear crosses the plane.
+// A slip wall, a symmetry plane, takes the normal stress -2/3 mu div_t u of
+// each node's gradient through its sub-face, div_t the divergence less the
+// normal velocity's normal derivative: it balances the interior edges' -2/3
+// mu div u of the flow along the plane. (With that derivative, all of n.tau.n,
+// it would cancel the viscous damping of a velocity through the plane, which
+// then grows on a one-cell extrusion.)
 inline void symmetry_stress_kernel(const int *btype, const double *normal, const double *area, const int *num_nodes,
                                    const double *shares, const double *prim1, const double *prim2,
                                    const double *prim3, const double *prim4, const double *grad1, const double *grad2,
@@ -728,12 +761,13 @@ inline void symmetry_stress_kernel(const int *btype, const double *normal, const
       p[m] = j == 0 ? prim1[m] : j == 1 ? prim2[m] : j == 2 ? prim3[m] : prim4[m];
     for (int i = 0; i < NGRAD_OP2; ++i)
       grad[i] = j == 0 ? grad1[i] : j == 1 ? grad2[i] : j == 2 ? grad3[i] : grad4[i];
-    double g[4][3], tau[3][3];
+    double g[4][3];
     viscous_gradients_op2(p, grad, g);
-    stress_op2(dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant)) + eddy_viscosity_op2(p), g, tau);
-    double tau_nn = 0.0;
+    double normal_derivative = 0.0;
     for (int a = 0; a < 3; ++a)
-      for (int b = 0; b < 3; ++b) tau_nn += n[a] * tau[a][b] * n[b];
+      for (int b = 0; b < 3; ++b) normal_derivative += n[a] * g[a][b] * n[b];
+    const double mu = dynamic_viscosity_op2(p[4] / (p[0] * op2_gas_constant)) + eddy_viscosity_op2(p);
+    const double tau_nn = -2.0 / 3.0 * mu * (g[0][0] + g[1][1] + g[2][2] - normal_derivative);
     for (int i = 0; i < 3; ++i) {
       const double t = tau_nn * shares[3 * j + i];
       f[j][i] = t;
