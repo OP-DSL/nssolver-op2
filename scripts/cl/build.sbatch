@@ -4,20 +4,25 @@
 #SBATCH -p gpu -w renyi -N1 -c32 --gres=gpu:1 -t 04:00:00 -J op2sol-build
 #SBATCH -o /home/reguly/op2sol/logs/build-%j.out
 module load OP2-env gnu12/12.3.0 2>&1
+# ARCH (default 80, renyi's A100s) picks the CUDA architecture; another one
+# builds into install$ARCH and build$ARCH (70 for the V100 nodes:
+# ARCH=70 sbatch -w neumann scripts/cl/build.sbatch).
+ARCH=${ARCH:-80}
+SUFFIX=$([ "$ARCH" = 80 ] || echo "$ARCH")
 R=$HOME/op2sol
-I=$R/install
-B=$R/build
+I=$R/install$SUFFIX
+B=$R/build$SUFFIX
 mkdir -p $B
 set -e
 echo "gcc: $(gcc --version | head -1); nvcc: $(nvcc --version | tail -1); mpicc: $(mpicc --version | head -1)"
 
 if [ ! -f $I/petsc/lib/libpetsc.so ]; then
   cd $R/src
-  [ -d petsc-3.26.1 ] || tar xzf petsc-3.26.1.tar.gz
-  cd petsc-3.26.1
+  [ -d petsc-3.26.1$SUFFIX ] || { mkdir petsc-3.26.1$SUFFIX && tar xzf petsc-3.26.1.tar.gz -C petsc-3.26.1$SUFFIX --strip-components=1; }
+  cd petsc-3.26.1$SUFFIX
   unset PETSC_ARCH PETSC_DIR
   ./configure --prefix=$I/petsc --with-mpi-dir=$MPI_INSTALL_PATH --with-fc=0 --with-debugging=0 \
-    --with-shared-libraries=1 --download-f2cblaslapack --with-cuda=1 --with-cuda-arch=80 \
+    --with-shared-libraries=1 --download-f2cblaslapack --with-cuda=1 --with-cuda-arch=$ARCH \
     COPTFLAGS=-O2 CXXOPTFLAGS=-O2 CUDAOPTFLAGS=-O2 > $B/petsc-configure.log 2>&1 || { tail -40 $B/petsc-configure.log; exit 1; }
   make -j32 > $B/petsc-make.log 2>&1 || { tail -40 $B/petsc-make.log; exit 1; }
   make install > $B/petsc-install.log 2>&1
@@ -26,7 +31,7 @@ echo "petsc ok"
 
 if [ ! -f $I/op2/lib/cmake/op2/OP2Config.cmake ] || [ -n "$REBUILD_OP2" ]; then
   cmake -S $R/src/op2 -B $B/op2 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$I/op2 \
-    -DBUILD_SHARED_LIBS=ON -DOP2_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80 -DOP2_ENABLE_MPI=ON \
+    -DBUILD_SHARED_LIBS=ON -DOP2_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$ARCH -DOP2_ENABLE_MPI=ON \
     -DOP2_ENABLE_OPENMP=ON -DOP2_ENABLE_HDF5=ON -DHDF5_ROOT=$HOME/hdf5-cmake-par \
     -DOP2_ENABLE_PETSC=ON -DPETSC_DIR=$I/petsc -DOP2_ENABLE_HYPRE=OFF -DOP2_ENABLE_FORTRAN=OFF \
     -DOP2_ENABLE_TESTS=OFF -DOP2_ENABLE_APPS=ON -DOP2_ENABLE_INSTALL=ON \
@@ -39,7 +44,7 @@ fi
 echo "op2 ok"
 
 OP2CFG=$(dirname $(find $I/op2 -name OP2Config.cmake | head -1))
-cmake -S $R/src/nssolver -B $B/ns -DOP2_DIR=$OP2CFG -DCMAKE_CUDA_ARCHITECTURES=80 \
+cmake -S $R/src/nssolver -B $B/ns -DOP2_DIR=$OP2CFG -DCMAKE_CUDA_ARCHITECTURES=$ARCH \
   -DCMAKE_C_FLAGS="-I$MPI_INSTALL_PATH/include" -DCMAKE_CXX_FLAGS="-I$MPI_INSTALL_PATH/include" \
   > $B/ns-cmake.log 2>&1 || { tail -40 $B/ns-cmake.log; exit 1; }
 cmake --build $B/ns -j32 --target nssolver_op2_cuda nssolver_op2_openmp nssolver_op2_mpi_cuda \

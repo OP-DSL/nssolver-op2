@@ -208,7 +208,8 @@ struct CylinderSpec {
 // the AIAA buffet workshop's OAT15A grids), extruded one layer between slip
 // planes, blocks joined where their points coincide (within merge_tolerance,
 // after scale): no-slip walls where a face's centre lies within x in
-// [wall_x0, wall_x1], |y| <= wall_y, far field elsewhere.
+// [wall_x0, wall_x1], |y| <= wall_y, far field elsewhere. strides coarsen
+// blocks (every stride-th line and the last).
 struct Plot3DBlocksSpec {
     std::string path;
     Real scale {1.0};
@@ -218,6 +219,7 @@ struct Plot3DBlocksSpec {
     Real wall_x1 {1.01};
     Real wall_y {0.2};
     BoundaryType farfield {BoundaryType::Characteristic};
+    std::vector<std::array<Index, 2>> strides;  // per block, i and j: every stride-th line kept
 };
 
 // An O-grid about a biconvex circular-arc section of unit chord and the given

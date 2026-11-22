@@ -20,3 +20,4 @@ nssolver_op2_cuda
 *_profile_*.csv
 meshes/*.xml
 build/
+__pycache__/

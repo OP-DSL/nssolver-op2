@@ -1,5 +1,6 @@
 """Surface pressure of a unit-chord airfoil run against an experiment's:
-Cp from the wall's state (nssolver_op2_benchmark_postprocess_helper wall),
+Cp from the wall's state (nssolver_op2_benchmark_postprocess_helper wall,
+whose node order follows the section around),
 the experiment's from a Tecplot-style file of zones "... a = ALPHA" with
 x/c, Cp pairs (as the buffet workshop's OAT15A Cp.dat). Prints the RMS
 difference on each side and the shock position (the steepest pressure rise on
@@ -40,9 +41,14 @@ def main():
     fs = freestream(mach, re_, t, alpha)
     p_inf = fs["p"]
     q = 0.5 * fs["rho"] * fs["speed"] ** 2
-    rows = [r for r in csv.DictReader(open(wall)) if abs(float(r["z"])) < 1e-9]
-    upper = sorted((float(r["x"]), (float(r["p"]) - p_inf) / q) for r in rows if float(r["y"]) >= 0.0)
-    lower = sorted((float(r["x"]), (float(r["p"]) - p_inf) / q) for r in rows if float(r["y"]) < 0.0)
+    # The wall's nodes in the file's order, which follows the section around
+    # (the grid's first line), split at the leading edge; a blunt trailing
+    # edge's base (x of 1) left out. The half higher up is the upper surface.
+    rows = [r for r in csv.DictReader(open(wall)) if abs(float(r["z"])) < 1e-9 and float(r["x"]) < 0.999]
+    le = min(range(len(rows)), key=lambda i: float(rows[i]["x"]))
+    halves = [rows[:le + 1], rows[le:]]
+    halves.sort(key=lambda h: -sum(float(r["y"]) for r in h) / len(h))
+    upper, lower = [sorted((float(r["x"]), (float(r["p"]) - p_inf) / q) for r in h) for h in halves]
 
     exp, zone = [], None
     for line in open(exp_path):

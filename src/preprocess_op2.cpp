@@ -4,6 +4,7 @@
 #include <string>
 #include <array>
 #include <map>
+#include <sstream>
 #include <vector>
 
 #include "nssolver/hdf5_utils.hpp"
@@ -273,7 +274,21 @@ Mesh build_mesh(const std::string& case_name, const std::string& input_path, con
             .merge_tolerance = parse_real_param(params, "merge_tolerance", 1.0e-9),
             .wall_x0 = parse_real_param(params, "wall_x0", -0.01),
             .wall_x1 = parse_real_param(params, "wall_x1", 1.01),
-            .wall_y = parse_real_param(params, "wall_y", 0.2)});
+            .wall_y = parse_real_param(params, "wall_y", 0.2),
+            .strides = [&] {
+                // strides=si,sj;si,sj;... one pair per block
+                std::vector<std::array<Index, 2>> strides;
+                const auto it = params.find("strides");
+                if (it == params.end()) return strides;
+                std::stringstream list(it->second);
+                std::string pair;
+                while (std::getline(list, pair, ';')) {
+                    const auto comma = pair.find(',');
+                    strides.push_back({static_cast<Index>(std::stoi(pair.substr(0, comma))),
+                                       static_cast<Index>(std::stoi(pair.substr(comma + 1)))});
+                }
+                return strides;
+            }()});
     }
     if (case_name == "circular_arc") {
         return make_circular_arc_mesh(CircularArcSpec {

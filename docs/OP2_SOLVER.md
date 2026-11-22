@@ -709,6 +709,13 @@ the whole residual, and the CFL ramp restarts every step. A step ends when the r
 fallen by `inner_tolerance` or after `inner_iterations`. `restart_file` starts from a solution's
 `q`; `snapshot_interval` writes `q` and the primitives every that many steps.
 
+The inner iterations are inexact Newton steps: `configs/solve_dual.json` solves each to a relative
+residual of 0.1 rather than 1e-3, which keeps their count (11 to 14 a step on the transonic
+circular arc) and takes a sixth of the linear iterations, 2.4 times less time. For transonic
+starts `update_limit` (at most that relative change of density and pressure per node and
+iteration) scales back the update of the few nodes that would overshoot; skipping it, as the
+admissibility check otherwise does, leaves them out of step with their neighbours and blows up.
+
 The output file's `.history.csv` has each step's force on the no-slip walls,
 \(\sum(p\,\Delta\mathbf{S} - \mathbf{R}_{1..3})\) over their nodes' sub-faces: a wall node's momentum
 residual, which enforcing no slip discards, is its flux \(p\Delta\mathbf{S}\) through the wall less

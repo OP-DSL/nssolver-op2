@@ -1097,7 +1097,6 @@ Mesh make_plot3d_blocks_mesh(const Plot3DBlocksSpec& spec) {
         std::int32_t d[3] = {1, 1, 1};
         std::memcpy(d, dim_record.data() + 4 * ndim * b, 4 * ndim);
         if (ndim == 3 && d[2] != 1) throw std::runtime_error("PLOT3D block is not a single plane");
-        dims[b] = {d[0], d[1]};
         const std::size_t np = static_cast<std::size_t>(d[0]) * d[1];
         const auto data = record();
         const bool single = data.size() == 4 * ndim * np;
@@ -1112,11 +1111,38 @@ Mesh make_plot3d_blocks_mesh(const Plot3DBlocksSpec& spec) {
             std::memcpy(&v, data.data() + 8 * k, 8);
             return static_cast<Real>(v);
         };
-        blocks[b].resize(np);
-        for (std::size_t i = 0; i < np; ++i) blocks[b][i] = {spec.scale * value(i), spec.scale * value(np + i)};
+        // Every stride-th point in i and j (and the last): the strides must
+        // keep the points of lines blocks share, which the merge checks.
+        const Index si = b < static_cast<int>(spec.strides.size()) ? spec.strides[b][0] : 1;
+        const Index sj = b < static_cast<int>(spec.strides.size()) ? spec.strides[b][1] : 1;
+        const auto picks = [](Index n, Index s) {
+            std::vector<Index> k;
+            for (Index i = 0; i < n; i += s) k.push_back(i);
+            if (k.back() != n - 1) k.push_back(n - 1);
+            return k;
+        };
+        const auto pi = picks(d[0], si), pj = picks(d[1], sj);
+        dims[b] = {static_cast<Index>(pi.size()), static_cast<Index>(pj.size())};
+        for (Index j : pj)
+            for (Index i : pi) {
+                const std::size_t k = static_cast<std::size_t>(j) * d[0] + i;
+                blocks[b].push_back({spec.scale * value(k), spec.scale * value(np + k)});
+            }
     }
-    return build_extruded_blocks(dims, blocks, spec.lz, spec.merge_tolerance,
-                                 airfoil_classifier(spec.wall_x0, spec.wall_x1, spec.wall_y, spec.farfield));
+    Mesh mesh = build_extruded_blocks(dims, blocks, spec.lz, spec.merge_tolerance,
+                                      airfoil_classifier(spec.wall_x0, spec.wall_x1, spec.wall_y, spec.farfield));
+    // Lines blocks share that did not merge (strides that miss each other's
+    // points) leave far-field faces inside the domain.
+    Real outer = 0.0, inner = std::numeric_limits<Real>::max();
+    for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
+        if (mesh.boundary_faces.type[f] != spec.farfield) continue;
+        const auto ids = boundary_face_nodes(mesh.boundary_faces, f);
+        const Real r = std::hypot(mesh.nodes.x[ids[0]] - 0.5 * (spec.wall_x0 + spec.wall_x1), mesh.nodes.y[ids[0]]);
+        outer = std::max(outer, r);
+        inner = std::min(inner, r);
+    }
+    if (inner < 0.25 * outer) throw std::runtime_error("block interfaces did not merge (far-field faces inside the domain)");
+    return mesh;
 }
 
 Mesh make_circular_arc_mesh(const CircularArcSpec& spec) {
