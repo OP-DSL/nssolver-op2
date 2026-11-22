@@ -264,6 +264,27 @@ Mesh build_mesh(const std::string& case_name, const std::string& input_path, con
             .upper_farfield = BoundaryType::Farfield,
             .side_farfield = BoundaryType::Farfield});
     }
+    if (case_name == "plot3d_blocks") {
+        if (input_path.empty()) throw std::runtime_error("plot3d_blocks preprocessing requires a PLOT3D grid path");
+        return make_plot3d_blocks_mesh(Plot3DBlocksSpec {
+            .path = input_path,
+            .scale = parse_real_param(params, "scale", 1.0),
+            .lz = parse_real_param(params, "lz", 0.01),
+            .merge_tolerance = parse_real_param(params, "merge_tolerance", 1.0e-9),
+            .wall_x0 = parse_real_param(params, "wall_x0", -0.01),
+            .wall_x1 = parse_real_param(params, "wall_x1", 1.01),
+            .wall_y = parse_real_param(params, "wall_y", 0.2)});
+    }
+    if (case_name == "circular_arc") {
+        return make_circular_arc_mesh(CircularArcSpec {
+            .thickness = parse_real_param(params, "thickness", 0.18),
+            .surface_points = parse_int_param(params, "surface_points", 161),
+            .normal_points = parse_int_param(params, "normal_points", 129),
+            .first_spacing = parse_real_param(params, "first_spacing", 2.0e-6),
+            .farfield_radius = parse_real_param(params, "farfield_radius", 50.0),
+            .blend_length = parse_real_param(params, "blend_length", 0.05),
+            .lz = parse_real_param(params, "lz", 0.01)});
+    }
     if (case_name == "cylinder") {
         return make_cylinder_mesh(CylinderSpec {
             .ntheta = parse_int_param(params, "ntheta", 192),
@@ -337,7 +358,7 @@ int main(int argc, char** argv) {
     int param_index = 3;
     std::string input_path;
     if ((case_name == "hydra" || case_name == "hydra_benchmark" || case_name == "su2" || case_name == "onera_m6" ||
-         case_name == "plot3d2d") &&
+         case_name == "plot3d2d" || case_name == "plot3d_blocks") &&
         argc >= 4) {
         input_path = argv[3];
         param_index = 4;

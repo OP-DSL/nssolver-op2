@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
+#include <map>
+#include <unordered_map>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -144,6 +148,30 @@ void finalize_mesh(Mesh& mesh) {
             mesh.node_to_boundary_faces[nodes[local]].push_back(f);
         }
     }
+}
+
+// The squared distance from p to triangle abc (Ericson, Real-Time Collision
+// Detection: the closest point by the region of p).
+Real triangle_distance2(const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c) {
+    const Vec3 ab = b - a, ac = c - a, ap = p - a;
+    const Real d1 = dot(ab, ap), d2 = dot(ac, ap);
+    const auto sq = [&](const Vec3& q) { const Vec3 d = p - q; return dot(d, d); };
+    if (d1 <= 0.0 && d2 <= 0.0) return sq(a);
+    const Vec3 bp = p - b;
+    const Real d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return sq(b);
+    const Real vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) return sq(a + (d1 / (d1 - d3)) * ab);
+    const Vec3 cp = p - c;
+    const Real d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return sq(c);
+    const Real vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) return sq(a + (d2 / (d2 - d6)) * ac);
+    const Real va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0)
+        return sq(b + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c - b));
+    const Real denom = 1.0 / (va + vb + vc);
+    return sq(a + (vb * denom) * ab + (vc * denom) * ac);
 }
 
 Real stretched_coordinate(Index idx, Index count, Real length, Real growth) {
@@ -389,28 +417,6 @@ Mesh build_structured_mesh(Index nx,
             for (Index i = 0; i < fx; ++i)
                 wall[static_cast<std::size_t>(k) * fx + i] = ymin_type(i, k) == BoundaryType::NoSlipWall ? 1 : 0;
 
-        const auto triangle_distance2 = [](const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c) {
-            // Closest point of a triangle to p (Ericson, Real-Time Collision Detection).
-            const Vec3 ab = b - a, ac = c - a, ap = p - a;
-            const Real d1 = dot(ab, ap), d2 = dot(ac, ap);
-            const auto sq = [&](const Vec3& q) { const Vec3 d = p - q; return dot(d, d); };
-            if (d1 <= 0.0 && d2 <= 0.0) return sq(a);
-            const Vec3 bp = p - b;
-            const Real d3 = dot(ab, bp), d4 = dot(ac, bp);
-            if (d3 >= 0.0 && d4 <= d3) return sq(b);
-            const Real vc = d1 * d4 - d3 * d2;
-            if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) return sq(a + (d1 / (d1 - d3)) * ab);
-            const Vec3 cp = p - c;
-            const Real d5 = dot(ab, cp), d6 = dot(ac, cp);
-            if (d6 >= 0.0 && d5 <= d6) return sq(c);
-            const Real vb = d5 * d2 - d1 * d6;
-            if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) return sq(a + (d2 / (d2 - d6)) * ac);
-            const Real va = d3 * d6 - d5 * d4;
-            if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0)
-                return sq(b + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c - b));
-            const Real denom = 1.0 / (va + vb + vc);
-            return sq(a + (vb * denom) * ab + (vc * denom) * ac);
-        };
         const auto node_at = [&](Index i, Index j, Index k) {
             const std::size_t id = nid(i, j, k);
             return Vec3 {mesh.nodes.x[id], mesh.nodes.y[id], mesh.nodes.z[id]};
@@ -457,6 +463,205 @@ Mesh build_structured_mesh(Index nx,
         }
     }
     return mesh;
+}
+
+
+// A hexahedral cell's corners as (i, j, k) offsets, its faces, and its edges:
+// the corner they start from, their direction and their two faces.
+constexpr int hex_corner[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                                  {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+constexpr int hex_face[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                                {3, 2, 6, 7}, {0, 3, 7, 4}, {1, 2, 6, 5}};
+constexpr int hex_edge[12][4] = {{0, 0, 0, 2}, {3, 0, 0, 3}, {4, 0, 1, 2}, {7, 0, 1, 3},
+                                 {0, 1, 0, 4}, {1, 1, 0, 5}, {4, 1, 1, 4}, {5, 1, 1, 5},
+                                 {0, 2, 2, 4}, {1, 2, 2, 5}, {3, 2, 3, 4}, {2, 2, 3, 5}};
+
+using FaceClassifier = std::function<std::pair<BoundaryType, std::string>(const Vec3&, const Vec3&)>;
+
+// A mesh of hexahedra given by their corners (in hex_corner's order): nodal
+// volumes, median-dual edges, and as boundary faces the faces only one cell
+// has, pointing away from it, typed by classify(centroid, area vector). The
+// wall distance is exact to every no-slip face.
+Mesh build_hex_mesh(const std::vector<Vec3>& points, const std::vector<std::array<Index, 8>>& hexes,
+                    const FaceClassifier& classify) {
+    Mesh mesh;
+    const std::size_t n = points.size();
+    mesh.nodes.count = n;
+    mesh.nodes.x.resize(n);
+    mesh.nodes.y.resize(n);
+    mesh.nodes.z.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        mesh.nodes.x[i] = points[i].x;
+        mesh.nodes.y[i] = points[i].y;
+        mesh.nodes.z[i] = points[i].z;
+    }
+    mesh.nodes.vol.assign(n, 0.0);
+    mesh.nodes.wall_dist.assign(n, 1.0e30);
+
+    int edge_end[12];
+    for (int e = 0; e < 12; ++e) {
+        int c[3] = {hex_corner[hex_edge[e][0]][0], hex_corner[hex_edge[e][0]][1], hex_corner[hex_edge[e][0]][2]};
+        c[hex_edge[e][1]] += 1;
+        for (int m = 0; m < 8; ++m)
+            if (hex_corner[m][0] == c[0] && hex_corner[m][1] == c[1] && hex_corner[m][2] == c[2]) edge_end[e] = m;
+    }
+
+    std::unordered_map<std::uint64_t, Index> edge_of;
+    edge_of.reserve(3 * hexes.size() + 16);
+    struct FaceKeyHash {
+        std::size_t operator()(const std::array<Index, 4>& k) const {
+            std::uint64_t h = 1469598103934665603ULL;
+            for (Index v : k) h = (h ^ static_cast<std::uint64_t>(v)) * 1099511628211ULL;
+            return static_cast<std::size_t>(h);
+        }
+    };
+    // Each face by its sorted nodes: its cell and face, or -1 once a second cell has it.
+    std::unordered_map<std::array<Index, 4>, std::pair<long long, int>, FaceKeyHash> faces;
+    faces.reserve(4 * hexes.size() + 16);
+
+    for (std::size_t h = 0; h < hexes.size(); ++h) {
+        std::array<Vec3, 8> p {};
+        Vec3 cell {};
+        for (int c = 0; c < 8; ++c) {
+            p[c] = points[hexes[h][c]];
+            cell = cell + 0.125 * p[c];
+        }
+        const Real volume = hex_volume(p);
+        for (int c = 0; c < 8; ++c) mesh.nodes.vol[hexes[h][c]] += volume / 8.0;
+        std::array<Vec3, 6> centroid_face {};
+        for (int f = 0; f < 6; ++f)
+            for (int c = 0; c < 4; ++c) centroid_face[f] = centroid_face[f] + 0.25 * p[hex_face[f][c]];
+        for (int e = 0; e < 12; ++e) {
+            const Index a = hexes[h][hex_edge[e][0]], b = hexes[h][edge_end[e]];
+            const std::uint64_t key = (static_cast<std::uint64_t>(std::min(a, b)) << 32) |
+                                      static_cast<std::uint64_t>(std::max(a, b));
+            auto [it, fresh] = edge_of.try_emplace(key, static_cast<Index>(mesh.edges.node_L.size()));
+            if (fresh) add_edge(mesh, a, b, {});
+            const Index edge = it->second;
+            const Vec3 pl = points[mesh.edges.node_L[edge]], pr = points[mesh.edges.node_R[edge]];
+            Vec3 dual = quad_area_vector(0.5 * (pl + pr), centroid_face[hex_edge[e][2]], cell,
+                                         centroid_face[hex_edge[e][3]]);
+            if (dot(dual, pr - pl) < 0.0) dual = -1.0 * dual;
+            mesh.edges.nx[edge] += dual.x;
+            mesh.edges.ny[edge] += dual.y;
+            mesh.edges.nz[edge] += dual.z;
+        }
+        for (int f = 0; f < 6; ++f) {
+            std::array<Index, 4> key {};
+            for (int c = 0; c < 4; ++c) key[c] = hexes[h][hex_face[f][c]];
+            std::sort(key.begin(), key.end());
+            auto [it, fresh] = faces.try_emplace(key, static_cast<long long>(h), f);
+            if (!fresh) it->second.first = -1;
+        }
+    }
+    for (std::size_t e = 0; e < mesh.edges.node_L.size(); ++e)
+        mesh.edges.area[e] = norm(Vec3 {mesh.edges.nx[e], mesh.edges.ny[e], mesh.edges.nz[e]});
+
+    // Boundary faces in a fixed order (the map's is not).
+    std::vector<std::pair<long long, int>> boundary;
+    for (const auto& [key, owner] : faces)
+        if (owner.first >= 0) boundary.push_back(owner);
+    std::sort(boundary.begin(), boundary.end());
+    std::map<std::string, Index> groups;
+    for (const auto& [h, f] : boundary) {
+        std::array<Index, 4> ids {};
+        Vec3 cell {}, centre {};
+        for (int c = 0; c < 8; ++c) cell = cell + 0.125 * points[hexes[h][c]];
+        for (int c = 0; c < 4; ++c) {
+            ids[c] = hexes[h][hex_face[f][c]];
+            centre = centre + 0.25 * points[ids[c]];
+        }
+        Vec3 normal = quad_area_vector(points[ids[0]], points[ids[1]], points[ids[2]], points[ids[3]]);
+        if (dot(normal, centre - cell) < 0.0) normal = -1.0 * normal;
+        const auto [type, name] = classify(centre, normal);
+        const Index group = groups.try_emplace(name, static_cast<Index>(groups.size())).first->second;
+        add_boundary_face(mesh, ids[0], ids[1], ids[2], ids[3], normal, type, name, group);
+    }
+    finalize_mesh(mesh);
+
+    std::vector<std::array<Vec3, 4>> walls;
+    for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
+        if (mesh.boundary_faces.type[f] != BoundaryType::NoSlipWall) continue;
+        const auto ids = boundary_face_nodes(mesh.boundary_faces, f);
+        walls.push_back({points[ids[0]], points[ids[1]], points[ids[2]], points[ids[3]]});
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        Real best = std::numeric_limits<Real>::max();
+        for (const auto& w : walls)
+            best = std::min({best, triangle_distance2(points[i], w[0], w[1], w[2]),
+                             triangle_distance2(points[i], w[0], w[2], w[3])});
+        if (!walls.empty()) mesh.nodes.wall_dist[i] = std::sqrt(best);
+    }
+    return mesh;
+}
+
+// Planar quad blocks (points (x, y) of block b at i + ni j) as one layer of
+// hexahedra between z = 0 and lz: points within tol of each other are one
+// (block interfaces, a C-grid's wake cut).
+Mesh build_extruded_blocks(const std::vector<std::array<Index, 2>>& dims,
+                           const std::vector<std::vector<std::array<Real, 2>>>& blocks, Real lz, Real tol,
+                           const FaceClassifier& classify) {
+    struct PairHash {
+        std::size_t operator()(const std::pair<long long, long long>& k) const {
+            return std::hash<long long>()(k.first) * 31 + std::hash<long long>()(k.second);
+        }
+    };
+    std::unordered_map<std::pair<long long, long long>, Index, PairHash> merged;
+    std::vector<std::array<Real, 2>> plane;
+    std::vector<std::vector<Index>> ids(blocks.size());
+    for (std::size_t b = 0; b < blocks.size(); ++b) {
+        ids[b].resize(blocks[b].size());
+        for (std::size_t i = 0; i < blocks[b].size(); ++i) {
+            const auto& q = blocks[b][i];
+            const std::pair<long long, long long> key {std::llround(q[0] / tol), std::llround(q[1] / tol)};
+            auto [it, fresh] = merged.try_emplace(key, static_cast<Index>(plane.size()));
+            if (fresh) plane.push_back(q);
+            ids[b][i] = it->second;
+        }
+    }
+    const Index np = static_cast<Index>(plane.size());
+    std::vector<Vec3> points(2 * static_cast<std::size_t>(np));
+    for (Index i = 0; i < np; ++i) {
+        points[i] = {plane[i][0], plane[i][1], 0.0};
+        points[np + i] = {plane[i][0], plane[i][1], lz};
+    }
+    std::vector<std::array<Index, 8>> hexes;
+    for (std::size_t b = 0; b < blocks.size(); ++b) {
+        const Index ni = dims[b][0], nj = dims[b][1];
+        std::size_t positive = 0, negative = 0;
+        for (Index j = 0; j + 1 < nj; ++j)
+            for (Index i = 0; i + 1 < ni; ++i) {
+                const Index q[4] = {ids[b][j * ni + i], ids[b][j * ni + i + 1], ids[b][(j + 1) * ni + i + 1],
+                                    ids[b][(j + 1) * ni + i]};
+                if (q[0] == q[1] || q[1] == q[2] || q[2] == q[3] || q[3] == q[0])
+                    throw std::runtime_error("degenerate quad in block " + std::to_string(b));
+                // Counter-clockwise in the plane, so that (i, j, k) is right-handed.
+                const Real twice_area = (plane[q[1]][0] - plane[q[0]][0]) * (plane[q[3]][1] - plane[q[0]][1]) -
+                                        (plane[q[1]][1] - plane[q[0]][1]) * (plane[q[3]][0] - plane[q[0]][0]);
+                if (twice_area >= 0.0) {
+                    ++positive;
+                    hexes.push_back({q[0], q[1], q[2], q[3], np + q[0], np + q[1], np + q[2], np + q[3]});
+                } else {
+                    ++negative;
+                    hexes.push_back({q[0], q[3], q[2], q[1], np + q[0], np + q[3], np + q[2], np + q[1]});
+                }
+            }
+        // A block's cells all turn one way unless it folds over itself.
+        if (positive && negative)
+            throw std::runtime_error("block " + std::to_string(b) + " folds: " + std::to_string(std::min(positive, negative)) +
+                                     " of its cells are turned over");
+    }
+    return build_hex_mesh(points, hexes, classify);
+}
+
+// An airfoil grid's boundaries: the z planes slip walls, faces whose centre
+// lies in the box (x0, x1, |y| <= y) no-slip walls, every other one far field.
+FaceClassifier airfoil_classifier(Real x0, Real x1, Real y, BoundaryType farfield) {
+    return [=](const Vec3& centre, const Vec3& normal) -> std::pair<BoundaryType, std::string> {
+        if (std::abs(normal.z) > 0.5 * norm(normal)) return {BoundaryType::SlipWall, "span"};
+        if (centre.x >= x0 && centre.x <= x1 && std::abs(centre.y) <= y) return {BoundaryType::NoSlipWall, "wall"};
+        return {farfield, "farfield"};
+    };
 }
 
 }  // namespace
@@ -863,6 +1068,125 @@ Mesh make_cylinder_mesh(const CylinderSpec& spec) {
                                  constant_name("none"), constant_name("none"),
                                  constant_name("wall"), constant_name("farfield"),
                                  constant_name("zmin"), constant_name("zmax"), true);
+}
+
+Mesh make_plot3d_blocks_mesh(const Plot3DBlocksSpec& spec) {
+    // Fortran unformatted (sequential records, little-endian): the block
+    // count, the dimensions (2 or 3 per block), then each block's x, y (and z)
+    // in double or single precision. A 3D block must be one plane (nk = 1).
+    std::ifstream in(spec.path, std::ios::binary);
+    if (!in) throw std::runtime_error("cannot open PLOT3D grid: " + spec.path);
+    const auto record = [&]() {
+        std::int32_t head = 0, tail = 0;
+        in.read(reinterpret_cast<char*>(&head), 4);
+        std::vector<char> data(static_cast<std::size_t>(head));
+        in.read(data.data(), head);
+        in.read(reinterpret_cast<char*>(&tail), 4);
+        if (!in || head != tail) throw std::runtime_error("bad Fortran record in " + spec.path);
+        return data;
+    };
+    const auto count = record();
+    std::int32_t nblocks = 0;
+    std::memcpy(&nblocks, count.data(), 4);
+    const auto dim_record = record();
+    const int ndim = static_cast<int>(dim_record.size() / (4 * static_cast<std::size_t>(nblocks)));
+    if (ndim != 2 && ndim != 3) throw std::runtime_error("PLOT3D dimensions record of unexpected size");
+    std::vector<std::array<Index, 2>> dims(nblocks);
+    std::vector<std::vector<std::array<Real, 2>>> blocks(nblocks);
+    for (int b = 0; b < nblocks; ++b) {
+        std::int32_t d[3] = {1, 1, 1};
+        std::memcpy(d, dim_record.data() + 4 * ndim * b, 4 * ndim);
+        if (ndim == 3 && d[2] != 1) throw std::runtime_error("PLOT3D block is not a single plane");
+        dims[b] = {d[0], d[1]};
+        const std::size_t np = static_cast<std::size_t>(d[0]) * d[1];
+        const auto data = record();
+        const bool single = data.size() == 4 * ndim * np;
+        if (!single && data.size() != 8 * ndim * np) throw std::runtime_error("PLOT3D block record of unexpected size");
+        const auto value = [&](std::size_t k) {
+            if (single) {
+                float f;
+                std::memcpy(&f, data.data() + 4 * k, 4);
+                return static_cast<Real>(f);
+            }
+            double v;
+            std::memcpy(&v, data.data() + 8 * k, 8);
+            return static_cast<Real>(v);
+        };
+        blocks[b].resize(np);
+        for (std::size_t i = 0; i < np; ++i) blocks[b][i] = {spec.scale * value(i), spec.scale * value(np + i)};
+    }
+    return build_extruded_blocks(dims, blocks, spec.lz, spec.merge_tolerance,
+                                 airfoil_classifier(spec.wall_x0, spec.wall_x1, spec.wall_y, spec.farfield));
+}
+
+Mesh make_circular_arc_mesh(const CircularArcSpec& spec) {
+    // The arcs of a biconvex section of unit chord: y = +-(sqrt(r^2 - (x -
+    // 1/2)^2) - (r - h)), h half the thickness.
+    const Real h = 0.5 * spec.thickness;
+    const Real r = (0.25 + h * h) / (2.0 * h);
+    const Real pi = std::acos(-1.0);
+    const auto surface = [&](Real x) { return std::sqrt(std::max(r * r - (x - 0.5) * (x - 0.5), 0.0)) - (r - h); };
+
+    // An O-grid (a C-grid's wake cut makes the sharp trailing edge a concave
+    // corner, where the wall's normals cross): the section clockwise from the
+    // trailing edge along the lower surface and back along the upper, points
+    // clustered at both edges; the last point is the first again.
+    const Index ns = spec.surface_points;
+    std::vector<Real> xs(ns);
+    for (Index i = 0; i < ns; ++i) xs[i] = 0.5 * (1.0 + std::cos(pi * static_cast<Real>(i) / (ns - 1)));
+    std::vector<std::array<Real, 2>> inner;
+    for (Index i = 0; i < ns; ++i) inner.push_back({xs[i], -surface(xs[i])});
+    for (Index i = ns - 2; i >= 0; --i) inner.push_back({xs[i], surface(xs[i])});
+    const Index ni = static_cast<Index>(inner.size());
+    const Index nc = ni - 1;  // distinct points around
+
+    // Off the section: its normal (left of the clockwise line, into the flow)
+    // and the far-field circle about mid-chord at equal angles per line from
+    // the trailing edge's direction, so that the lines the clustered edges
+    // send out cover the flow ahead of and behind them.
+    std::vector<std::array<Real, 2>> normal(nc), outer(nc);
+    for (Index i = 0; i < nc; ++i) {
+        const auto& a = inner[(i + nc - 1) % nc];
+        const auto& b = inner[(i + 1) % nc];
+        const Real tx = b[0] - a[0], ty = b[1] - a[1];
+        const Real len = std::hypot(tx, ty);
+        normal[i] = {-ty / len, tx / len};
+        const Real theta = -2.0 * pi * static_cast<Real>(i) / static_cast<Real>(nc);
+        outer[i] = {0.5 + spec.farfield_radius * std::cos(theta), spec.farfield_radius * std::sin(theta)};
+    }
+    const Real big_r = spec.farfield_radius;
+
+    // Lines from the section to the circle, the first spacing off the wall's,
+    // growing geometrically: normal to the wall within about blend_length of
+    // it, straight to the outer point beyond.
+    const Index nj = spec.normal_points;
+    std::vector<Real> eta(nj);
+    {
+        const Real total = big_r;
+        const auto extent = [&](Real g) { return spec.first_spacing * (std::pow(g, nj - 1) - 1.0) / (g - 1.0); };
+        Real lo = 1.0 + 1.0e-9, hi = 2.0;
+        while (extent(hi) < total) hi *= 2.0;
+        for (int it = 0; it < 200; ++it) {
+            const Real mid = 0.5 * (lo + hi);
+            (extent(mid) < total ? lo : hi) = mid;
+        }
+        const Real g = 0.5 * (lo + hi);
+        for (Index j = 0; j < nj; ++j) eta[j] = spec.first_spacing * (std::pow(g, j) - 1.0) / (g - 1.0) / total;
+        eta[nj - 1] = 1.0;
+    }
+    std::vector<std::array<Real, 2>> block(static_cast<std::size_t>(ni) * nj);
+    for (Index j = 0; j < nj; ++j)
+        for (Index i = 0; i < ni; ++i) {
+            const Index c = i % nc;
+            const Real lx = outer[c][0] - inner[c][0], ly = outer[c][1] - inner[c][1];
+            const Real d = eta[j] * std::hypot(lx, ly);
+            const Real w = 1.0 - std::exp(-d / spec.blend_length);
+            block[static_cast<std::size_t>(j) * ni + i] = {
+                inner[c][0] + (1.0 - w) * d * normal[c][0] + w * eta[j] * lx,
+                inner[c][1] + (1.0 - w) * d * normal[c][1] + w * eta[j] * ly};
+        }
+    return build_extruded_blocks({{ni, nj}}, {block}, spec.lz, 1.0e-12,
+                                 airfoil_classifier(-0.01, 1.01, 0.5 * spec.thickness + 0.01, spec.farfield));
 }
 
 Real total_nodal_volume(const Mesh& mesh) {

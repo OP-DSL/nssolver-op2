@@ -226,6 +226,13 @@ solutions are) and does not limit them. `limiter = 0` reconstructs unlimited. Fo
 flows that is the right choice: the limiter switches in boundary layers and holds the iteration in a
 limit cycle a few orders above round-off.
 
+`limiter = 2` is van Albada's, per component and differentiable: the gradient's projection
+\(u=\nabla W_i\cdot\Delta\mathbf{r}_{ij}/2\) and the edge's half difference \(e=(W_j-W_i)/2\) give the
+increment \((u(e^2+\varepsilon^2)+e(u^2+\varepsilon^2))/(u^2+e^2+2\varepsilon^2)\), \(\varepsilon\) 1% of the
+free stream's density, speed of sound and pressure. For flows with shocks, where unlimited
+reconstruction fails and the edge limiter's switches stall the implicit scheme's inner iterations
+(dual time stepping), it converges them as the unlimited scheme does smooth flows.
+
 This limiter is directional and edge-local. It is less multidimensional than a Venkatakrishnan-style nodal extrema limiter, but it maps cleanly onto OP2 loops.
 
 Implementation:
@@ -526,6 +533,18 @@ extruded one cell between slip planes, its jmin boundary a no-slip wall over
 `wall_x0` to `wall_x1`) and build circular-cylinder O-grids (`cylinder`,
 periodic around). Their boundary faces point away from their own cell.
 
+Planar multi-block grids go through a general hexahedral builder: the blocks'
+points merged where they coincide (block interfaces, C-grid wake cuts),
+extruded one layer, median-dual edges from each hexahedron's twelve edges,
+boundary faces the faces only one cell has, typed by where they lie, and the
+wall distance exact to every no-slip face. A block that folds over itself is an
+error. `plot3d_blocks` reads Fortran unformatted multi-block PLOT3D planes (the
+AIAA buffet workshop's OAT15A grids); `circular_arc` builds an O-grid about a
+biconvex circular-arc section (a C-grid's wake cut would make its sharp
+trailing edge a concave corner, where the wall's normals cross), its lines
+normal to the wall within `blend_length` and straight to equal angles on the
+far-field circle beyond.
+
 All connectivity is zero-based in the preprocessed OP2 mesh. Meshes written before `bface_node_normals` existed must be preprocessed again. (The solver no longer reads `bnode_slip` and `bnode_normal`.)
 
 The local preprocessing helper also supports procedural structured meshes with
@@ -710,3 +729,9 @@ Implementation:
 - `scripts/cylinder/run.sh`: laminar vortex shedding behind a circular cylinder at Re 100
   (`cylinder` preprocessing, a periodic O-grid), by dual time stepping; Strouhal number, mean drag
   and lift amplitude (`scripts/cylinder/forces.py`).
+- `scripts/airfoil/run.sh`: transonic airfoils by SA, steady or by dual time stepping, the free
+  stream from Mach, Reynolds number, temperature and incidence (`freestream.py`): the 18% circular
+  arc (McDevitt et al.; self-excited shock oscillation at zero incidence) and the ONERA OAT15A on
+  the buffet workshop's grid (shock buffet; its geometry stays ONERA's and outside this
+  repository). Lift, drag and the oscillation's Strouhal number from the history (`forces.py`),
+  the wall's pressure from `nssolver_op2_benchmark_postprocess_helper wall`.

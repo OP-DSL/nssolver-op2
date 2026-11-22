@@ -204,6 +204,36 @@ struct CylinderSpec {
     BoundaryType farfield {BoundaryType::Characteristic};
 };
 
+// Planar multi-block grids in PLOT3D (Fortran unformatted, x-y, nk = 1, as
+// the AIAA buffet workshop's OAT15A grids), extruded one layer between slip
+// planes, blocks joined where their points coincide (within merge_tolerance,
+// after scale): no-slip walls where a face's centre lies within x in
+// [wall_x0, wall_x1], |y| <= wall_y, far field elsewhere.
+struct Plot3DBlocksSpec {
+    std::string path;
+    Real scale {1.0};
+    Real lz {0.01};
+    Real merge_tolerance {1.0e-9};
+    Real wall_x0 {-0.01};
+    Real wall_x1 {1.01};
+    Real wall_y {0.2};
+    BoundaryType farfield {BoundaryType::Characteristic};
+};
+
+// An O-grid about a biconvex circular-arc section of unit chord and the given
+// thickness: surface_points per side (clustered at both edges), normal_points
+// out to farfield_radius from first_spacing.
+struct CircularArcSpec {
+    Real thickness {0.18};
+    Index surface_points {161};
+    Index normal_points {129};
+    Real first_spacing {2.0e-6};
+    Real farfield_radius {50.0};
+    Real blend_length {0.05};
+    Real lz {0.01};
+    BoundaryType farfield {BoundaryType::Characteristic};
+};
+
 Mesh make_structured_box_mesh(const StructuredBoxSpec& spec);
 Mesh make_bump_channel_mesh(const BumpChannelSpec& spec);
 Mesh make_flat_plate_mesh(const FlatPlateSpec& spec);
@@ -212,6 +242,8 @@ Mesh make_axisymmetric_body_mesh(const AxisymmetricBodySpec& spec);
 Mesh make_naca_finite_wing_mesh(const NacaWingSpec& spec);
 Mesh make_plot3d_2d_mesh(const Plot3D2DSpec& spec);
 Mesh make_cylinder_mesh(const CylinderSpec& spec);
+Mesh make_plot3d_blocks_mesh(const Plot3DBlocksSpec& spec);
+Mesh make_circular_arc_mesh(const CircularArcSpec& spec);
 Real total_nodal_volume(const Mesh& mesh);
 // Each boundary face's nodes' shares of it, 4 area vectors per face (unused
 // ones zero): the median sub-face (node, edge midpoints, face centroid) that

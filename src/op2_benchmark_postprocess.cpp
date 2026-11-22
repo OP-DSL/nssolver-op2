@@ -139,16 +139,37 @@ int main(int argc, char** argv) {
     throw std::runtime_error("nssolver_op2_benchmark_postprocess requires HDF5-enabled build");
 #else
     if (argc != 6) {
-        std::cerr << "usage: nssolver_op2_benchmark_postprocess <case> <mesh.h5> <solution.h5> <output_prefix> <leading_edge_x>\n";
+        std::cerr << "usage: nssolver_op2_benchmark_postprocess <flatplate|wall> <mesh.h5> <solution.h5> <output_prefix> <leading_edge_x>\n";
         return 1;
     }
 
     const std::string case_name = argv[1];
-    if (case_name != "flatplate_develop" && case_name != "flatplate") {
-        throw std::runtime_error("only flatplate/flatplate_develop postprocessing is implemented");
+    if (case_name != "flatplate_develop" && case_name != "flatplate" && case_name != "wall") {
+        throw std::runtime_error("only flatplate/flatplate_develop and wall postprocessing are implemented");
     }
 
     GasModel gas {};
+    if (case_name == "wall") {
+        // The no-slip walls' nodes and their state, for surface pressure.
+        const Mesh mesh = read_op2_mesh_hdf5(argv[2]);
+        const FlowState state = read_solution_hdf5(argv[3], gas, mesh.nodes.count);
+        std::vector<char> on_wall(mesh.nodes.count, 0);
+        for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
+            if (mesh.boundary_faces.type[f] != BoundaryType::NoSlipWall) continue;
+            const auto nodes = boundary_face_nodes(mesh.boundary_faces, f);
+            for (std::size_t k = 0; k < boundary_face_num_nodes(mesh.boundary_faces, f); ++k) on_wall[nodes[k]] = 1;
+        }
+        const std::string path = std::string(argv[4]) + "_wall.csv";
+        std::ofstream out(path);
+        out.precision(10);
+        out << "x,y,z,p,rho,T\n";
+        for (std::size_t i = 0; i < mesh.nodes.count; ++i)
+            if (on_wall[i])
+                out << mesh.nodes.x[i] << ',' << mesh.nodes.y[i] << ',' << mesh.nodes.z[i] << ',' << state.p[i] << ','
+                    << state.rho[i] << ',' << state.T[i] << '\n';
+        std::cout << "Wrote " << path << "\n";
+        return 0;
+    }
     BenchmarkOptions options {};
     options.freestream = Primitive {.rho = 1.225, .u = 20.0, .v = 0.0, .w = 0.0, .p = 101325.0, .nu_tilde = 0.0};
     const Mesh mesh = read_op2_mesh_hdf5(argv[2]);
