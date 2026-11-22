@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -168,13 +169,21 @@ Mesh build_structured_mesh(Index nx,
                            const BoundaryNameFunction& ymin_name,
                            const BoundaryNameFunction& ymax_name,
                            const BoundaryNameFunction& zmin_name,
-                           const BoundaryNameFunction& zmax_name) {
+                           const BoundaryNameFunction& zmax_name,
+                           bool periodic_i = false) {
     if (nx < 2 || ny < 2 || nz < 2) {
         throw std::invalid_argument("Structured mesh requires at least 2 nodes in each direction");
     }
 
+    // Periodic in i (an O-grid): i = nx - 1 is i = 0 again, and there are no
+    // xmin and xmax boundaries.
+    const Index stride = periodic_i ? nx - 1 : nx;
+    const auto nid = [=](Index i, Index j, Index k) {
+        return node_id(periodic_i && i == nx - 1 ? 0 : i, j, k, stride, ny);
+    };
+
     Mesh mesh;
-    const auto node_count = static_cast<std::size_t>(nx) * ny * nz;
+    const auto node_count = static_cast<std::size_t>(stride) * ny * nz;
     mesh.nodes.count = node_count;
     mesh.nodes.x.resize(node_count);
     mesh.nodes.y.resize(node_count);
@@ -184,8 +193,8 @@ Mesh build_structured_mesh(Index nx,
 
     for (Index k = 0; k < nz; ++k) {
         for (Index j = 0; j < ny; ++j) {
-            for (Index i = 0; i < nx; ++i) {
-                const Index id = node_id(i, j, k, nx, ny);
+            for (Index i = 0; i < stride; ++i) {
+                const Index id = nid(i, j, k);
                 const Vec3 p = mapping(i, j, k);
                 mesh.nodes.x[id] = p.x;
                 mesh.nodes.y[id] = p.y;
@@ -194,26 +203,27 @@ Mesh build_structured_mesh(Index nx,
         }
     }
 
-    Vec3 centroid {};
-    for (std::size_t i = 0; i < mesh.nodes.count; ++i) {
-        centroid.x += mesh.nodes.x[i];
-        centroid.y += mesh.nodes.y[i];
-        centroid.z += mesh.nodes.z[i];
-    }
-    centroid = centroid / static_cast<Real>(mesh.nodes.count);
+    // Boundary faces point away from their own cell's centroid.
+    const auto cell_centroid = [&](Index i, Index j, Index k) {
+        Vec3 c {};
+        for (Index dk = 0; dk < 2; ++dk)
+            for (Index dj = 0; dj < 2; ++dj)
+                for (Index di = 0; di < 2; ++di) c = c + 0.125 * mapping(i + di, j + dj, k + dk);
+        return c;
+    };
 
     for (Index k = 0; k < nz - 1; ++k) {
         for (Index j = 0; j < ny - 1; ++j) {
             for (Index i = 0; i < nx - 1; ++i) {
                 const std::array<Index, 8> nodes = {
-                    node_id(i, j, k, nx, ny),
-                    node_id(i + 1, j, k, nx, ny),
-                    node_id(i + 1, j + 1, k, nx, ny),
-                    node_id(i, j + 1, k, nx, ny),
-                    node_id(i, j, k + 1, nx, ny),
-                    node_id(i + 1, j, k + 1, nx, ny),
-                    node_id(i + 1, j + 1, k + 1, nx, ny),
-                    node_id(i, j + 1, k + 1, nx, ny),
+                    nid(i, j, k),
+                    nid(i + 1, j, k),
+                    nid(i + 1, j + 1, k),
+                    nid(i, j + 1, k),
+                    nid(i, j, k + 1),
+                    nid(i + 1, j, k + 1),
+                    nid(i + 1, j + 1, k + 1),
+                    nid(i, j + 1, k + 1),
                 };
                 std::array<Vec3, 8> p {};
                 for (int n = 0; n < 8; ++n) {
@@ -235,19 +245,19 @@ Mesh build_structured_mesh(Index nx,
     for (auto& e : edge_from) e.assign(node_count, -1);
     for (Index k = 0; k < nz; ++k) {
         for (Index j = 0; j < ny; ++j) {
-            for (Index i = 0; i < nx; ++i) {
-                const Index left = node_id(i, j, k, nx, ny);
+            for (Index i = 0; i < stride; ++i) {
+                const Index left = nid(i, j, k);
                 if (i + 1 < nx) {
                     edge_from[0][left] = static_cast<Index>(mesh.edges.node_L.size());
-                    add_edge(mesh, left, node_id(i + 1, j, k, nx, ny), {});
+                    add_edge(mesh, left, nid(i + 1, j, k), {});
                 }
                 if (j + 1 < ny) {
                     edge_from[1][left] = static_cast<Index>(mesh.edges.node_L.size());
-                    add_edge(mesh, left, node_id(i, j + 1, k, nx, ny), {});
+                    add_edge(mesh, left, nid(i, j + 1, k), {});
                 }
                 if (k + 1 < nz) {
                     edge_from[2][left] = static_cast<Index>(mesh.edges.node_L.size());
-                    add_edge(mesh, left, node_id(i, j, k + 1, nx, ny), {});
+                    add_edge(mesh, left, nid(i, j, k + 1), {});
                 }
             }
         }
@@ -284,7 +294,7 @@ Mesh build_structured_mesh(Index nx,
                     const Vec3 midpoint = 0.5 * (pa + pb);
                     Vec3 dual = quad_area_vector(midpoint, centroid_face[e[2]], centroid_cell, centroid_face[e[3]]);
                     if (dot(dual, pb - pa) < 0.0) dual = -1.0 * dual;
-                    const Index edge = edge_from[dir][node_id(i + corner[a][0], j + corner[a][1], k + corner[a][2], nx, ny)];
+                    const Index edge = edge_from[dir][nid(i + corner[a][0], j + corner[a][1], k + corner[a][2])];
                     mesh.edges.nx[edge] += dual.x;
                     mesh.edges.ny[edge] += dual.y;
                     mesh.edges.nz[edge] += dual.z;
@@ -296,12 +306,12 @@ Mesh build_structured_mesh(Index nx,
         mesh.edges.area[e] = norm(Vec3 {mesh.edges.nx[e], mesh.edges.ny[e], mesh.edges.nz[e]});
     }
 
-    for (Index j = 0; j < ny - 1; ++j) {
+    for (Index j = 0; j < ny - 1 && !periodic_i; ++j) {
         for (Index k = 0; k < nz - 1; ++k) {
             const std::array<Index, 4> xmin_nodes = {
-                node_id(0, j, k, nx, ny), node_id(0, j + 1, k, nx, ny), node_id(0, j + 1, k + 1, nx, ny), node_id(0, j, k + 1, nx, ny)};
+                nid(0, j, k), nid(0, j + 1, k), nid(0, j + 1, k + 1), nid(0, j, k + 1)};
             const std::array<Index, 4> xmax_nodes = {
-                node_id(nx - 1, j, k, nx, ny), node_id(nx - 1, j, k + 1, nx, ny), node_id(nx - 1, j + 1, k + 1, nx, ny), node_id(nx - 1, j + 1, k, nx, ny)};
+                nid(nx - 1, j, k), nid(nx - 1, j, k + 1), nid(nx - 1, j + 1, k + 1), nid(nx - 1, j + 1, k)};
             const Vec3 xmin_normal = quad_area_vector(
                 mapping(0, j, k), mapping(0, j + 1, k), mapping(0, j + 1, k + 1), mapping(0, j, k + 1));
             const Vec3 xmax_normal = quad_area_vector(
@@ -309,8 +319,8 @@ Mesh build_structured_mesh(Index nx,
             const Vec3 xmin_center = 0.25 * (mapping(0, j, k) + mapping(0, j + 1, k) + mapping(0, j + 1, k + 1) + mapping(0, j, k + 1));
             const Vec3 xmax_center =
                 0.25 * (mapping(nx - 1, j, k) + mapping(nx - 1, j, k + 1) + mapping(nx - 1, j + 1, k + 1) + mapping(nx - 1, j + 1, k));
-            const Vec3 xmin_oriented = dot(xmin_normal, xmin_center - centroid) >= 0.0 ? xmin_normal : -1.0 * xmin_normal;
-            const Vec3 xmax_oriented = dot(xmax_normal, xmax_center - centroid) >= 0.0 ? xmax_normal : -1.0 * xmax_normal;
+            const Vec3 xmin_oriented = dot(xmin_normal, xmin_center - cell_centroid(0, j, k)) >= 0.0 ? xmin_normal : -1.0 * xmin_normal;
+            const Vec3 xmax_oriented = dot(xmax_normal, xmax_center - cell_centroid(nx - 2, j, k)) >= 0.0 ? xmax_normal : -1.0 * xmax_normal;
             add_boundary_face(mesh, xmin_nodes[0], xmin_nodes[1], xmin_nodes[2], xmin_nodes[3], xmin_oriented,
                               xmin_type(j, k), xmin_name(j, k), 0);
             add_boundary_face(mesh, xmax_nodes[0], xmax_nodes[1], xmax_nodes[2], xmax_nodes[3], xmax_oriented,
@@ -321,9 +331,9 @@ Mesh build_structured_mesh(Index nx,
     for (Index i = 0; i < nx - 1; ++i) {
         for (Index k = 0; k < nz - 1; ++k) {
             const std::array<Index, 4> ymin_nodes = {
-                node_id(i, 0, k, nx, ny), node_id(i, 0, k + 1, nx, ny), node_id(i + 1, 0, k + 1, nx, ny), node_id(i + 1, 0, k, nx, ny)};
+                nid(i, 0, k), nid(i, 0, k + 1), nid(i + 1, 0, k + 1), nid(i + 1, 0, k)};
             const std::array<Index, 4> ymax_nodes = {
-                node_id(i, ny - 1, k, nx, ny), node_id(i + 1, ny - 1, k, nx, ny), node_id(i + 1, ny - 1, k + 1, nx, ny), node_id(i, ny - 1, k + 1, nx, ny)};
+                nid(i, ny - 1, k), nid(i + 1, ny - 1, k), nid(i + 1, ny - 1, k + 1), nid(i, ny - 1, k + 1)};
             const Vec3 ymin_normal = quad_area_vector(
                 mapping(i, 0, k), mapping(i, 0, k + 1), mapping(i + 1, 0, k + 1), mapping(i + 1, 0, k));
             const Vec3 ymax_normal = quad_area_vector(
@@ -331,8 +341,8 @@ Mesh build_structured_mesh(Index nx,
             const Vec3 ymin_center = 0.25 * (mapping(i, 0, k) + mapping(i, 0, k + 1) + mapping(i + 1, 0, k + 1) + mapping(i + 1, 0, k));
             const Vec3 ymax_center =
                 0.25 * (mapping(i, ny - 1, k) + mapping(i + 1, ny - 1, k) + mapping(i + 1, ny - 1, k + 1) + mapping(i, ny - 1, k + 1));
-            const Vec3 ymin_oriented = dot(ymin_normal, ymin_center - centroid) >= 0.0 ? ymin_normal : -1.0 * ymin_normal;
-            const Vec3 ymax_oriented = dot(ymax_normal, ymax_center - centroid) >= 0.0 ? ymax_normal : -1.0 * ymax_normal;
+            const Vec3 ymin_oriented = dot(ymin_normal, ymin_center - cell_centroid(i, 0, k)) >= 0.0 ? ymin_normal : -1.0 * ymin_normal;
+            const Vec3 ymax_oriented = dot(ymax_normal, ymax_center - cell_centroid(i, ny - 2, k)) >= 0.0 ? ymax_normal : -1.0 * ymax_normal;
             add_boundary_face(mesh, ymin_nodes[0], ymin_nodes[1], ymin_nodes[2], ymin_nodes[3], ymin_oriented,
                               ymin_type(i, k), ymin_name(i, k), 2);
             add_boundary_face(mesh, ymax_nodes[0], ymax_nodes[1], ymax_nodes[2], ymax_nodes[3], ymax_oriented,
@@ -343,9 +353,9 @@ Mesh build_structured_mesh(Index nx,
     for (Index i = 0; i < nx - 1; ++i) {
         for (Index j = 0; j < ny - 1; ++j) {
             const std::array<Index, 4> zmin_nodes = {
-                node_id(i, j, 0, nx, ny), node_id(i + 1, j, 0, nx, ny), node_id(i + 1, j + 1, 0, nx, ny), node_id(i, j + 1, 0, nx, ny)};
+                nid(i, j, 0), nid(i + 1, j, 0), nid(i + 1, j + 1, 0), nid(i, j + 1, 0)};
             const std::array<Index, 4> zmax_nodes = {
-                node_id(i, j, nz - 1, nx, ny), node_id(i, j + 1, nz - 1, nx, ny), node_id(i + 1, j + 1, nz - 1, nx, ny), node_id(i + 1, j, nz - 1, nx, ny)};
+                nid(i, j, nz - 1), nid(i, j + 1, nz - 1), nid(i + 1, j + 1, nz - 1), nid(i + 1, j, nz - 1)};
             const Vec3 zmin_normal = quad_area_vector(
                 mapping(i, j, 0), mapping(i + 1, j, 0), mapping(i + 1, j + 1, 0), mapping(i, j + 1, 0));
             const Vec3 zmax_normal = quad_area_vector(
@@ -353,8 +363,8 @@ Mesh build_structured_mesh(Index nx,
             const Vec3 zmin_center = 0.25 * (mapping(i, j, 0) + mapping(i + 1, j, 0) + mapping(i + 1, j + 1, 0) + mapping(i, j + 1, 0));
             const Vec3 zmax_center =
                 0.25 * (mapping(i, j, nz - 1) + mapping(i, j + 1, nz - 1) + mapping(i + 1, j + 1, nz - 1) + mapping(i + 1, j, nz - 1));
-            const Vec3 zmin_oriented = dot(zmin_normal, zmin_center - centroid) >= 0.0 ? zmin_normal : -1.0 * zmin_normal;
-            const Vec3 zmax_oriented = dot(zmax_normal, zmax_center - centroid) >= 0.0 ? zmax_normal : -1.0 * zmax_normal;
+            const Vec3 zmin_oriented = dot(zmin_normal, zmin_center - cell_centroid(i, j, 0)) >= 0.0 ? zmin_normal : -1.0 * zmin_normal;
+            const Vec3 zmax_oriented = dot(zmax_normal, zmax_center - cell_centroid(i, j, nz - 2)) >= 0.0 ? zmax_normal : -1.0 * zmax_normal;
             add_boundary_face(mesh, zmin_nodes[0], zmin_nodes[1], zmin_nodes[2], zmin_nodes[3], zmin_oriented,
                               zmin_type(i, j), zmin_name(i, j), 4);
             add_boundary_face(mesh, zmax_nodes[0], zmax_nodes[1], zmax_nodes[2], zmax_nodes[3], zmax_oriented,
@@ -362,23 +372,90 @@ Mesh build_structured_mesh(Index nx,
         }
     }
 
-    for (std::size_t i = 0; i < mesh.nodes.count; ++i) {
-        const Real x = mesh.nodes.x[i];
-        const Real y = mesh.nodes.y[i];
-        const Real z = mesh.nodes.z[i];
-        Real min_dist = std::numeric_limits<Real>::max();
-        for (Index f = 0; f < static_cast<Index>(mesh.boundary_faces.count); ++f) {
-            const Index n = mesh.boundary_faces.n1[f];
-            const Vec3 face_origin {mesh.nodes.x[n], mesh.nodes.y[n], mesh.nodes.z[n]};
-            const Vec3 normal = {mesh.boundary_faces.nx[f], mesh.boundary_faces.ny[f], mesh.boundary_faces.nz[f]};
-            const Vec3 unit = normal / std::max(mesh.boundary_faces.area[f], 1.0e-14);
-            const Real dist = std::abs(dot(Vec3 {x - face_origin.x, y - face_origin.y, z - face_origin.z}, unit));
-            min_dist = std::min(min_dist, dist);
-        }
-        mesh.nodes.wall_dist[i] = min_dist;
-    }
-
     finalize_mesh(mesh);
+
+    // Wall distance for the SA model: the distance to the no-slip faces of
+    // the ymin boundary (the wing is carved into it), exact to the faces in a
+    // window of columns around the node's own, which holds the nearest wall
+    // point wherever the distance is small enough to matter; a node with none
+    // in its window takes a sample of the wall's faces. (The loop this
+    // replaces ran before the faces were counted and left every node at the
+    // largest Real, which switched the SA source off.)
+    {
+        constexpr Index window = 3, coarse_step = 8;
+        const Index fx = nx - 1, fz = nz - 1;
+        std::vector<char> wall(static_cast<std::size_t>(fx) * fz, 0);
+        for (Index k = 0; k < fz; ++k)
+            for (Index i = 0; i < fx; ++i)
+                wall[static_cast<std::size_t>(k) * fx + i] = ymin_type(i, k) == BoundaryType::NoSlipWall ? 1 : 0;
+
+        const auto triangle_distance2 = [](const Vec3& p, const Vec3& a, const Vec3& b, const Vec3& c) {
+            // Closest point of a triangle to p (Ericson, Real-Time Collision Detection).
+            const Vec3 ab = b - a, ac = c - a, ap = p - a;
+            const Real d1 = dot(ab, ap), d2 = dot(ac, ap);
+            const auto sq = [&](const Vec3& q) { const Vec3 d = p - q; return dot(d, d); };
+            if (d1 <= 0.0 && d2 <= 0.0) return sq(a);
+            const Vec3 bp = p - b;
+            const Real d3 = dot(ab, bp), d4 = dot(ac, bp);
+            if (d3 >= 0.0 && d4 <= d3) return sq(b);
+            const Real vc = d1 * d4 - d3 * d2;
+            if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) return sq(a + (d1 / (d1 - d3)) * ab);
+            const Vec3 cp = p - c;
+            const Real d5 = dot(ab, cp), d6 = dot(ac, cp);
+            if (d6 >= 0.0 && d5 <= d6) return sq(c);
+            const Real vb = d5 * d2 - d1 * d6;
+            if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) return sq(a + (d2 / (d2 - d6)) * ac);
+            const Real va = d3 * d6 - d5 * d4;
+            if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0)
+                return sq(b + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c - b));
+            const Real denom = 1.0 / (va + vb + vc);
+            return sq(a + (vb * denom) * ab + (vc * denom) * ac);
+        };
+        const auto node_at = [&](Index i, Index j, Index k) {
+            const std::size_t id = nid(i, j, k);
+            return Vec3 {mesh.nodes.x[id], mesh.nodes.y[id], mesh.nodes.z[id]};
+        };
+        const auto face_distance2 = [&](const Vec3& p, Index i, Index k) {
+            const Vec3 a = node_at(i, 0, k), b = node_at(i + 1, 0, k), c = node_at(i + 1, 0, k + 1),
+                       d = node_at(i, 0, k + 1);
+            return std::min(triangle_distance2(p, a, b, c), triangle_distance2(p, a, c, d));
+        };
+
+        // Few wall faces (a 2D grid's): every node to all of them.
+        std::vector<std::pair<Index, Index>> wall_faces;
+        for (Index k = 0; k < fz; ++k)
+            for (Index i = 0; i < fx; ++i)
+                if (wall[static_cast<std::size_t>(k) * fx + i]) wall_faces.emplace_back(i, k);
+        const bool exhaustive = wall_faces.size() <= 4096;
+
+        for (Index k = 0; k < nz; ++k) {
+            for (Index j = 0; j < ny; ++j) {
+                for (Index i = 0; i < nx; ++i) {
+                    const Vec3 p = node_at(i, j, k);
+                    Real best = std::numeric_limits<Real>::max();
+                    if (exhaustive) {
+                        for (const auto& [ii, kk] : wall_faces) best = std::min(best, face_distance2(p, ii, kk));
+                        mesh.nodes.wall_dist[nid(i, j, k)] =
+                            best == std::numeric_limits<Real>::max() ? 1.0e30 : std::sqrt(best);
+                        continue;
+                    }
+                    const Index k0 = k > window ? k - window : 0, k1 = std::min(fz - 1, k + window);
+                    const Index i0 = i > window ? i - window : 0, i1 = std::min(fx - 1, i + window);
+                    for (Index kk = k0; kk <= k1; ++kk)
+                        for (Index ii = i0; ii <= i1; ++ii)
+                            if (wall[static_cast<std::size_t>(kk) * fx + ii])
+                                best = std::min(best, face_distance2(p, ii, kk));
+                    if (best == std::numeric_limits<Real>::max())
+                        for (Index kk = 0; kk < fz; kk += coarse_step)
+                            for (Index ii = 0; ii < fx; ii += coarse_step)
+                                if (wall[static_cast<std::size_t>(kk) * fx + ii])
+                                    best = std::min(best, face_distance2(p, ii, kk));
+                    mesh.nodes.wall_dist[nid(i, j, k)] =
+                        best == std::numeric_limits<Real>::max() ? 1.0e30 : std::sqrt(best);
+                }
+            }
+        }
+    }
     return mesh;
 }
 
@@ -717,6 +794,75 @@ Mesh make_naca_finite_wing_mesh(const NacaWingSpec& spec) {
                                  constant_name("inlet"), constant_name("outlet"),
                                  lower_name, constant_name("upper_farfield"),
                                  constant_name("side_min"), constant_name("side_max"));
+}
+
+Mesh make_plot3d_2d_mesh(const Plot3D2DSpec& spec) {
+    std::ifstream in(spec.path);
+    if (!in) throw std::runtime_error("cannot open PLOT3D grid: " + spec.path);
+    Index blocks = 0, ni = 0, nj = 0;
+    in >> blocks >> ni >> nj;
+    if (!in || blocks != 1 || ni < 2 || nj < 2)
+        throw std::runtime_error("expected a formatted 2D PLOT3D grid of one block: " + spec.path);
+    const std::size_t count = static_cast<std::size_t>(ni) * nj;
+    std::vector<Real> x(count), y(count);
+    for (auto& v : x) in >> v;
+    for (auto& v : y) in >> v;
+    if (!in) throw std::runtime_error("truncated PLOT3D grid: " + spec.path);
+
+    const auto mapping = [&](Index i, Index j, Index k) {
+        const std::size_t id = static_cast<std::size_t>(j) * ni + i;
+        return Vec3 {x[id], y[id], spec.lz * static_cast<Real>(k)};
+    };
+    const auto on_wall = [&](Index i) {
+        const Real x_mid = 0.5 * (x[i] + x[i + 1]);
+        return x_mid >= spec.wall_x0 && x_mid <= spec.wall_x1;
+    };
+    const auto lower_type = [=](Index i, Index) { return on_wall(i) ? BoundaryType::NoSlipWall : spec.lower_other; };
+    const auto lower_name = [=](Index i, Index) { return on_wall(i) ? std::string("wall") : std::string("lower"); };
+    const auto constant_name = [](const std::string& value) { return [=](Index, Index) { return value; }; };
+    const auto constant_type = [](BoundaryType value) { return [=](Index, Index) { return value; }; };
+
+    return build_structured_mesh(ni, nj, 2, mapping,
+                                 constant_type(spec.inlet), constant_type(spec.outlet),
+                                 lower_type, constant_type(spec.upper),
+                                 constant_type(BoundaryType::SlipWall), constant_type(BoundaryType::SlipWall),
+                                 constant_name("inlet"), constant_name("outlet"),
+                                 lower_name, constant_name("upper"),
+                                 constant_name("zmin"), constant_name("zmax"));
+}
+
+Mesh make_cylinder_mesh(const CylinderSpec& spec) {
+    // Radii from the wall's spacing growing geometrically to the far field.
+    const Real span = spec.farfield_radius - spec.radius;
+    const auto extent = [&](Real g) {
+        return std::abs(g - 1.0) < 1.0e-12 ? spec.first_spacing * (spec.nr - 1)
+                                           : spec.first_spacing * (std::pow(g, spec.nr - 1) - 1.0) / (g - 1.0);
+    };
+    if (extent(1.0) > span) throw std::invalid_argument("cylinder: first_spacing too large for nr");
+    Real lo = 1.0, hi = 2.0;
+    while (extent(hi) < span) hi *= 2.0;
+    for (int it = 0; it < 200; ++it) {
+        const Real mid = 0.5 * (lo + hi);
+        (extent(mid) < span ? lo : hi) = mid;
+    }
+    const Real growth = 0.5 * (lo + hi);
+    const Real two_pi = 2.0 * std::acos(-1.0);
+    const Real dz = spec.lz / static_cast<Real>(spec.nz - 1);
+    // Clockwise in i, so that (i, j, k) is right-handed.
+    const auto mapping = [=](Index i, Index j, Index k) {
+        const Real theta = -two_pi * static_cast<Real>(i) / static_cast<Real>(spec.ntheta);
+        const Real r = spec.radius + spec.first_spacing * (std::pow(growth, j) - 1.0) / (growth - 1.0);
+        return Vec3 {r * std::cos(theta), r * std::sin(theta), dz * k};
+    };
+    const auto constant_name = [](const std::string& value) { return [=](Index, Index) { return value; }; };
+    const auto constant_type = [](BoundaryType value) { return [=](Index, Index) { return value; }; };
+    return build_structured_mesh(spec.ntheta + 1, spec.nr, spec.nz, mapping,
+                                 constant_type(BoundaryType::SlipWall), constant_type(BoundaryType::SlipWall),
+                                 constant_type(spec.wall), constant_type(spec.farfield),
+                                 constant_type(BoundaryType::SlipWall), constant_type(BoundaryType::SlipWall),
+                                 constant_name("none"), constant_name("none"),
+                                 constant_name("wall"), constant_name("farfield"),
+                                 constant_name("zmin"), constant_name("zmax"), true);
 }
 
 Real total_nodal_volume(const Mesh& mesh) {

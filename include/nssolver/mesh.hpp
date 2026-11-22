@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -8,12 +9,17 @@
 
 namespace nssolver {
 
+// Farfield and Inlet impose the free stream strongly at their nodes in viscous
+// runs; Characteristic (a Riemann far field) and TotalInlet (total pressure
+// and temperature in, one quantity from the interior) only through the flux.
 enum class BoundaryType {
     Farfield,
     Inlet,
     Outlet,
     SlipWall,
-    NoSlipWall
+    NoSlipWall,
+    Characteristic,
+    TotalInlet
 };
 
 struct Nodes {
@@ -168,12 +174,44 @@ struct NacaWingSpec {
     BoundaryType side_farfield {BoundaryType::Farfield};
 };
 
+// A 2D structured grid from a formatted PLOT3D file (one block, x-y plane,
+// as the NASA Turbulence Modeling Resource gives them), extruded one cell in
+// z between slip planes: i along the jmin boundary, which is a no-slip wall
+// where the face's x lies in [wall_x0, wall_x1] and lower_other elsewhere.
+struct Plot3D2DSpec {
+    std::string path;
+    Real lz {0.05};
+    Real wall_x0 {0.0};
+    Real wall_x1 {std::numeric_limits<Real>::max()};
+    BoundaryType inlet {BoundaryType::Inlet};
+    BoundaryType outlet {BoundaryType::Outlet};
+    BoundaryType upper {BoundaryType::Farfield};
+    BoundaryType lower_other {BoundaryType::SlipWall};
+};
+
+// A circular cylinder's O-grid, extruded one layer in z between slip planes:
+// ntheta points around, nr from the wall (first_spacing off it) to
+// farfield_radius.
+struct CylinderSpec {
+    Index ntheta {192};
+    Index nr {128};
+    Index nz {2};
+    Real radius {0.5};
+    Real farfield_radius {30.0};
+    Real first_spacing {2.0e-3};
+    Real lz {0.1};
+    BoundaryType wall {BoundaryType::NoSlipWall};
+    BoundaryType farfield {BoundaryType::Characteristic};
+};
+
 Mesh make_structured_box_mesh(const StructuredBoxSpec& spec);
 Mesh make_bump_channel_mesh(const BumpChannelSpec& spec);
 Mesh make_flat_plate_mesh(const FlatPlateSpec& spec);
 Mesh make_bump_3d_mesh(const Bump3DSpec& spec);
 Mesh make_axisymmetric_body_mesh(const AxisymmetricBodySpec& spec);
 Mesh make_naca_finite_wing_mesh(const NacaWingSpec& spec);
+Mesh make_plot3d_2d_mesh(const Plot3D2DSpec& spec);
+Mesh make_cylinder_mesh(const CylinderSpec& spec);
 Real total_nodal_volume(const Mesh& mesh);
 // Each boundary face's nodes' shares of it, 4 area vectors per face (unused
 // ones zero): the median sub-face (node, edge midpoints, face centroid) that

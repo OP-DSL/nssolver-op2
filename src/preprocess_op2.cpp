@@ -264,6 +264,42 @@ Mesh build_mesh(const std::string& case_name, const std::string& input_path, con
             .upper_farfield = BoundaryType::Farfield,
             .side_farfield = BoundaryType::Farfield});
     }
+    if (case_name == "cylinder") {
+        return make_cylinder_mesh(CylinderSpec {
+            .ntheta = parse_int_param(params, "ntheta", 192),
+            .nr = parse_int_param(params, "nr", 128),
+            .nz = 2,
+            .radius = parse_real_param(params, "radius", 0.5),
+            .farfield_radius = parse_real_param(params, "farfield_radius", 30.0),
+            .first_spacing = parse_real_param(params, "first_spacing", 2.0e-3),
+            .lz = parse_real_param(params, "lz", 0.1)});
+    }
+    if (case_name == "plot3d2d") {
+        if (input_path.empty()) {
+            throw std::runtime_error("plot3d2d preprocessing requires an input PLOT3D grid path");
+        }
+        const auto boundary = [&](const std::string& key, BoundaryType fallback) {
+            const auto it = params.find(key);
+            if (it == params.end()) return fallback;
+            if (it->second == "farfield") return BoundaryType::Farfield;
+            if (it->second == "inlet") return BoundaryType::Inlet;
+            if (it->second == "outlet") return BoundaryType::Outlet;
+            if (it->second == "slip") return BoundaryType::SlipWall;
+            if (it->second == "wall") return BoundaryType::NoSlipWall;
+            if (it->second == "riemann") return BoundaryType::Characteristic;
+            if (it->second == "total") return BoundaryType::TotalInlet;
+            throw std::runtime_error("unknown boundary type for " + key + ": " + it->second);
+        };
+        return make_plot3d_2d_mesh(Plot3D2DSpec {
+            .path = input_path,
+            .lz = parse_real_param(params, "lz", 0.05),
+            .wall_x0 = parse_real_param(params, "wall_x0", 0.0),
+            .wall_x1 = parse_real_param(params, "wall_x1", std::numeric_limits<Real>::max()),
+            .inlet = boundary("inlet", BoundaryType::Inlet),
+            .outlet = boundary("outlet", BoundaryType::Outlet),
+            .upper = boundary("upper", BoundaryType::Farfield),
+            .lower_other = boundary("lower_other", BoundaryType::SlipWall)});
+    }
     if (case_name == "hydra" || case_name == "hydra_benchmark") {
         if (input_path.empty()) {
             throw std::runtime_error(case_name + " preprocessing requires an input Hydra HDF5 mesh path");
@@ -300,7 +336,9 @@ int main(int argc, char** argv) {
     const std::string output_path = argv[2];
     int param_index = 3;
     std::string input_path;
-    if ((case_name == "hydra" || case_name == "hydra_benchmark" || case_name == "su2" || case_name == "onera_m6") && argc >= 4) {
+    if ((case_name == "hydra" || case_name == "hydra_benchmark" || case_name == "su2" || case_name == "onera_m6" ||
+         case_name == "plot3d2d") &&
+        argc >= 4) {
         input_path = argv[3];
         param_index = 4;
     }

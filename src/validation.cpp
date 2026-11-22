@@ -17,6 +17,7 @@ struct WallSample {
     Real cf {};
     Real cp {};
     Real rex {};
+    Real tau_w {};
 };
 
 std::set<Index> unique_face_nodes(const Mesh& mesh, const std::string& face_name) {
@@ -101,22 +102,30 @@ void write_flat_plate_benchmark_outputs(const std::string& prefix,
         if (x <= leading_edge_x + 1.0e-12) {
             continue;
         }
-        const Real dy = nearest_positive_wall_distance(mesh, node);
-        const Real mu = dynamic_viscosity(state.T[inner], gas);
-        const Real tau_w = mu * state.u[inner] / std::max(dy, 1.0e-14);
-        const Real cp = (state.p[inner] - options.freestream.p) / (0.5 * rho_inf * u_inf * u_inf);
+        // du/dy at the wall from the parabola through it and the two nodes
+        // above (second order), with the wall's viscosity.
+        const Real y1 = mesh.nodes.y[inner] - mesh.nodes.y[node];
+        const Index outer = nearest_interior_neighbor(mesh, inner);
+        const Real y2 = mesh.nodes.y[outer] - mesh.nodes.y[node];
+        const Real u1 = state.u[inner], u2 = state.u[outer];
+        const Real dudy = outer != inner && y2 > y1
+                              ? (u1 * y2 * y2 - u2 * y1 * y1) / (y1 * y2 * (y2 - y1))
+                              : u1 / std::max(nearest_positive_wall_distance(mesh, node), 1.0e-14);
+        const Real tau_w = dynamic_viscosity(state.T[node], gas) * dudy;
+        const Real cp = (state.p[node] - options.freestream.p) / (0.5 * rho_inf * u_inf * u_inf);
         const Real rex = rho_inf * u_inf * (x - leading_edge_x) / mu_inf;
         const Real cf = tau_w / (0.5 * rho_inf * u_inf * u_inf);
-        samples[x] = {x, cf, cp, rex};
+        samples[x] = {x, cf, cp, rex, tau_w};
     }
 
     {
         const std::string path = prefix + "_wall.csv";
         std::ofstream out(path);
         ensure_stream(out, path);
-        out << "x,cf,cp,re_x\n";
+        out << "x,cf,cp,re_x,tau_w\n";
+        out.precision(10);
         for (const auto& [x, sample] : samples) {
-            out << x << ',' << sample.cf << ',' << sample.cp << ',' << sample.rex << '\n';
+            out << x << ',' << sample.cf << ',' << sample.cp << ',' << sample.rex << ',' << sample.tau_w << '\n';
         }
     }
 
