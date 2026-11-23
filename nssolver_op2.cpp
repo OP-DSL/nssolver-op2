@@ -36,6 +36,7 @@ struct ResidualNorms {
   double l2_rho = 0.0;
   double l2_rhoE = 0.0;
   double linf_rho = 0.0;
+  double l2_nu = 0.0;
 };
 
 struct Mesh {
@@ -57,7 +58,8 @@ static void usage(const char *argv0) {
 }
 
 static void write_residual_history_csv_op2(const std::string &path, const std::vector<double> &l2_rho,
-                                           const std::vector<double> &l2_rhoE, const std::vector<double> &linf_rho) {
+                                           const std::vector<double> &l2_rhoE, const std::vector<double> &linf_rho,
+                                           const std::vector<double> &l2_nu) {
   std::filesystem::path out_path(path);
   if (out_path.has_parent_path()) {
     std::filesystem::create_directories(out_path.parent_path());
@@ -66,9 +68,9 @@ static void write_residual_history_csv_op2(const std::string &path, const std::v
   if (!out) {
     throw std::runtime_error("failed to open residual history file: " + path);
   }
-  out << "iteration,l2_rho,l2_rhoE,linf_rho\n";
+  out << "iteration,l2_rho,l2_rhoE,linf_rho,l2_nu\n";
   for (std::size_t i = 0; i < l2_rho.size(); ++i) {
-    out << i << ',' << l2_rho[i] << ',' << l2_rhoE[i] << ',' << linf_rho[i] << '\n';
+    out << i << ',' << l2_rho[i] << ',' << l2_rhoE[i] << ',' << linf_rho[i] << ',' << l2_nu[i] << '\n';
   }
 }
 
@@ -251,15 +253,18 @@ static ResidualNorms residual_norms(const Mesh &m, op_dat res) {
   double l2_rho_sq = 0.0;
   double l2_rhoE_sq = 0.0;
   double linf_rho = 0.0;
+  double l2_nu_sq = 0.0;
   op_par_loop(residual_norm_kernel, "residual_norm_kernel", m.nodes,
               op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_READ),
               op_arg_gbl(&l2_rho_sq, 1, "double", OP_INC),
               op_arg_gbl(&l2_rhoE_sq, 1, "double", OP_INC),
-              op_arg_gbl(&linf_rho, 1, "double", OP_MAX));
+              op_arg_gbl(&linf_rho, 1, "double", OP_MAX),
+              op_arg_gbl(&l2_nu_sq, 1, "double", OP_INC));
   ResidualNorms norms;
   norms.l2_rho = std::sqrt(l2_rho_sq / static_cast<double>(op_get_size(m.nodes)));
   norms.l2_rhoE = std::sqrt(l2_rhoE_sq / static_cast<double>(op_get_size(m.nodes)));
   norms.linf_rho = linf_rho;
+  norms.l2_nu = std::sqrt(l2_nu_sq / static_cast<double>(op_get_size(m.nodes)));
   return norms;
 }
 
@@ -475,13 +480,16 @@ int main(int argc, char **argv) {
     op2_outlet_backflow = cfg.outlet_backflow == "freestream";
     for (int i = 0; i < 6; ++i) op2_freestream[i] = cfg.primitive[i];
 
-    // The implicit scheme's reference state: rho, rho a, rho a^2 and rho nu
-    // of the free stream, nu at least its laminar viscosity.
+    // The implicit scheme's reference state: rho, rho a, rho a^2 of the free
+    // stream and rho nu, nu at least sa_scale times its laminar viscosity:
+    // nu~ in boundary layers reaches 10^3-10^4 nu, and a smaller reference
+    // lets the SA rows dominate the linear solver's norms.
     {
       const double *p = cfg.primitive;
       const double a = std::sqrt(cfg.gamma * p[4] / p[0]);
       const double nu = dynamic_viscosity_op2(p[4] / (p[0] * cfg.gas_constant)) / p[0];
-      const double scale[6] = {p[0], p[0] * a, p[0] * a, p[0] * a, p[0] * a * a, p[0] * std::max(p[5], nu)};
+      const double nu_ref = std::max(p[5], std::max(1.0, cfg.sa_scale) * nu);
+      const double scale[6] = {p[0], p[0] * a, p[0] * a, p[0] * a, p[0] * a * a, p[0] * nu_ref};
       for (int i = 0; i < 6; ++i) op2_scale[i] = scale[i];
     }
 
@@ -613,8 +621,10 @@ int main(int argc, char **argv) {
     std::vector<double> history_l2_rho;
     std::vector<double> history_l2_rhoE;
     std::vector<double> history_linf_rho;
+    std::vector<double> history_l2_nu;
     history_l2_rho.reserve(static_cast<std::size_t>(cfg.iterations));
     history_l2_rhoE.reserve(static_cast<std::size_t>(cfg.iterations));
+    history_l2_nu.reserve(static_cast<std::size_t>(cfg.iterations));
     history_linf_rho.reserve(static_cast<std::size_t>(cfg.iterations));
 
     // The implicit scheme's phases, and its linear solves.
@@ -789,6 +799,7 @@ int main(int argc, char **argv) {
         history_l2_rho.push_back(norms.l2_rho);
         history_l2_rhoE.push_back(norms.l2_rhoE);
         history_linf_rho.push_back(norms.linf_rho);
+        history_l2_nu.push_back(norms.l2_nu);
         if (initial_l2_rho < 0.0) initial_l2_rho = norms.l2_rho;
 
         step_its += its;
@@ -869,7 +880,8 @@ int main(int argc, char **argv) {
     op_fetch_data_hdf5_file(res, cfg.output_file.c_str());
     std::filesystem::path residual_path(cfg.output_file);
     residual_path.replace_extension(".residual.csv");
-    write_residual_history_csv_op2(residual_path.string(), history_l2_rho, history_l2_rhoE, history_linf_rho);
+    write_residual_history_csv_op2(residual_path.string(), history_l2_rho, history_l2_rhoE, history_linf_rho,
+                                    history_l2_nu);
 
     if (op_is_root()) std::cout << "Wrote solution HDF5: " << cfg.output_file << "\n";
     if (op_is_root()) std::cout << "Wrote residual CSV: " << residual_path.string() << "\n";

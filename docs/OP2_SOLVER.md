@@ -648,8 +648,20 @@ large CFL); second-order runs keep it as an approximation.
 
 Components the viscous scheme enforces (all at Dirichlet nodes, momentum and
 SA's at no-slip nodes) are rows of the identity with a zero right-hand side. The
-system is solved in variables scaled by the free stream
-($\rho, \rho a, \rho a^2, \rho\nu$), which balances the Krylov norms.
+system is solved in scaled variables, $S^{-1} A S\,x = S^{-1} b$ with
+$\delta q = S x$ and $S$ the reference state
+$(\rho_\infty, \rho_\infty a_\infty, \rho_\infty a_\infty, \rho_\infty a_\infty, \rho_\infty a_\infty^2, \rho_\infty \nu_{ref})$:
+the flow's is FUN3D's nondimensionalization, and
+$\nu_{ref} = \max(\tilde\nu_\infty, \kappa_{SA}\nu_\infty)$ with $\kappa_{SA}$ the
+config key `sa_scale` (1000), after Ceze and Fidkowski (AIAA 2013-2686): $\tilde\nu$
+reaches $10^3$-$10^4\,\nu_\infty$ in boundary layers, and a free-stream reference
+lets the SA rows dominate the Krylov norms (in the residual and, as GMRES's
+default left preconditioning measures it, in the update), so that a relative
+tolerance no longer controls the flow equations. The scaling is a similarity
+transform per node: ILU and block-Jacobi preconditioners are invariant to it,
+and it changes only what the Krylov method minimises and when it stops.
+`sa_scale = 1` gives the earlier free-stream reference. The residual history
+(`.residual.csv`) carries the SA residual's L2 norm, `l2_nu`.
 
 The linear solve takes the OP2 implicit proxy's options (`apps/c/implicit`),
 as config keys or `--key value` on the command line:

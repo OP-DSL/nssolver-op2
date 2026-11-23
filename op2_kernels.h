@@ -876,10 +876,12 @@ inline void rk_update_kernel(const int *rk_stage, const double *dt, const double
   }
 }
 
-inline void residual_norm_kernel(const double *res, double *l2rho, double *l2rhoE, double *linf_rho) {
+inline void residual_norm_kernel(const double *res, double *l2rho, double *l2rhoE, double *linf_rho,
+                                 double *l2nu) {
   l2rho[0] += res[0] * res[0];
   l2rhoE[0] += res[4] * res[4];
   linf_rho[0] = fmax(linf_rho[0], fabs(res[0]));
+  l2nu[0] += res[5] * res[5];
 }
 
 #include "op2_implicit_kernels.h"

@@ -10,9 +10,10 @@
 // term. Nodes whose state the viscous scheme enforces keep those components:
 // their rows are the identity and their right-hand side 0.
 //
-// The conservative variables span five orders of magnitude, so the system is
+// The conservative variables span ten orders of magnitude, so the system is
 // solved in scaled ones: S^-1 A S x = S^-1 b with dq = S x, S the reference
-// state op2_scale, which balances Krylov norms and the differences.
+// state op2_scale (rho, rho a, rho a^2, rho nu_ref), which balances Krylov
+// norms, the blocks' entries and the differences.
 
 static constexpr int NBLOCK_OP2 = NVAR_OP2 * NVAR_OP2;
 

@@ -41,6 +41,9 @@ struct SolverConfig {
   double implicit_cfl_growth = 1.0;
   double implicit_relax = 1.0;
   double update_limit = 0.0;  // > 0: at most this relative change of rho and p per node and iteration
+  // The SA variable's reference in the scaled system: rho nu of the free
+  // stream's nu~, at least sa_scale times its laminar nu (1 the old scaling).
+  double sa_scale = 1000.0;
   int jacobian_interval = 1;
 
   // Dual time stepping (implicit, time_step > 0): physical_steps steps of
@@ -120,6 +123,7 @@ inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const 
   else if (key == "implicit_cfl_growth") cfg.implicit_cfl_growth = std::stod(value);
   else if (key == "implicit_relax") cfg.implicit_relax = std::stod(value);
   else if (key == "update_limit") cfg.update_limit = std::stod(value);
+  else if (key == "sa_scale") cfg.sa_scale = std::stod(value);
   else if (key == "jacobian_interval") cfg.jacobian_interval = std::stoi(value);
   else if (key == "solve_config") cfg.solve_config = value;
   else if (key == "time_step") cfg.time_step = std::stod(value);
