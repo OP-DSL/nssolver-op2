@@ -8,7 +8,9 @@
 #SBATCH -p gpu -w renyi -N1 -c8 --gres=gpu:1 -t 12:00:00 -J airfoil
 #SBATCH -o /home/reguly/op2sol/logs/airfoil-%j.out
 # ARCH=70 with -w neumann|erdos|wald runs the V100 build (scripts/cl/build.sbatch).
-module load OP2-env gnu12/12.3.0 2>&1
+# neumann has GCC 12.4.0 rather than 12.3.0: its libstdc++ serves the build.
+module load OP2-env 2>&1
+module load gnu12/12.3.0 2>/dev/null || module load gnu12 2>&1
 ARCH=${ARCH:-80}
 SUFFIX=$([ "$ARCH" = 80 ] || echo "$ARCH")
 export LD_LIBRARY_PATH=$HOME/op2sol/install$SUFFIX/petsc/lib:$HOME/op2sol/install$SUFFIX/op2/lib:$HOME/op2sol/install$SUFFIX/op2/lib64:$HOME/hdf5-cmake-par/lib:$LD_LIBRARY_PATH
