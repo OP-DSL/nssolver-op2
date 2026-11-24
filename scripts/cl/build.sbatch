@@ -3,7 +3,8 @@
 # PETSc (CUDA), OP2 (solver layer, PETSc), nssolver and its helpers on renyi (A100).
 #SBATCH -p gpu -w renyi -N1 -c32 --gres=gpu:1 -t 04:00:00 -J op2sol-build
 #SBATCH -o /home/reguly/op2sol/logs/build-%j.out
-module load OP2-env gnu12/12.3.0 2>&1
+module load OP2-env 2>&1
+module load gnu12/12.3.0 2>/dev/null || module load gnu12 2>&1
 # ARCH (default 80, renyi's A100s) picks the CUDA architecture; another one
 # builds into install$ARCH and build$ARCH (70 for the V100 nodes:
 # ARCH=70 sbatch -w neumann scripts/cl/build.sbatch).
