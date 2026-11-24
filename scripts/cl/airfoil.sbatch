@@ -25,4 +25,16 @@ mkdir -p meshes-op2/arc meshes-op2/oat15a
   scale=4.3478260869565215 wall_x0=-0.01 wall_x1=1.01 wall_y=0.2 "strides=2,2;1,2;2,1;1,2"
 echo "CASE=$CASE ALPHA=$ALPHA MACH=$MACH DT=$DT STEPS=$STEPS ITERATIONS=$ITERATIONS RESTART=$RESTART TAG=$TAG EXTRA=$EXTRA"
 time BIN=$HOME/op2sol/build$SUFFIX/ns/nssolver_op2_cuda scripts/airfoil/run.sh --solve-config configs/solve.json $EXTRA
+# A dual-time run whose force blew up fails the job: dependent segments must not start from it.
+HIST=outputs-op2/$CASE/$TAG.history.csv
+if [ -n "$TAG" ] && [ -s "$HIST" ]; then
+  python3 - "$HIST" <<'EOF' || { echo "AIRFOIL-DIVERGED"; exit 1; }
+import csv, math, statistics, sys
+rows = list(csv.DictReader(open(sys.argv[1])))
+size = [max(abs(float(r["fx"])), abs(float(r["fy"]))) for r in (rows[0], rows[-1])]
+# Healthy runs end with inner reductions of 1e-3 to 1e-2; diverging ones near 1 or above.
+inner = statistics.median(float(r["inner_reduction"]) for r in rows[-50:])
+sys.exit(0 if math.isfinite(size[1]) and size[1] < 100 * size[0] and inner < 0.3 else 1)
+EOF
+fi
 echo AIRFOIL-DONE
