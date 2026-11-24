@@ -36,6 +36,11 @@ extern int op2_limiter;
 extern int op2_include_viscous;
 extern int op2_include_sa;
 extern int op2_outlet_backflow;
+// SA variants (TMR's names): the compressibility correction, Edwards and Chandra's form.
+extern int op2_sa_comp;
+extern int op2_sa_edwards;
+// limiter 3: the pressure sensor value from which van Albada's limiter starts to act.
+extern double op2_limiter_sensor;
 // The reference state (rho, rho a, rho a, rho a, rho a^2, rho nu) of the free stream.
 extern double op2_scale[6];
 
@@ -359,9 +364,10 @@ inline void reconstruct_primitive_op2(const double *prim, const double *grad, co
 // (u^2 + e^2 + 2 eps^2), u where they agree, toward 0 where they differ in
 // sign. eps is 1% of the free stream's density, speed of sound and pressure:
 // differentiable where the edge limiter's minimum switches and holds Newton's
-// iterations in a cycle.
+// iterations in a cycle. weight < 1 blends toward (u + e) / 2, the limiter's own
+// value for small differences, unlimited (limiter 3 away from shocks).
 inline void van_albada_reconstruct_op2(const double *prim, const double *neighbour, const double *grad,
-                                       const double *delta_r, double *out) {
+                                       const double *delta_r, double weight, double *out) {
   const double rho = op2_scale[0];
   const double a = op2_scale[1] / op2_scale[0];
   const double scale[NPRIM_OP2] = {rho, a, a, a, op2_scale[4], 1.0};
@@ -370,7 +376,8 @@ inline void van_albada_reconstruct_op2(const double *prim, const double *neighbo
     const double u = grad[base + 0] * delta_r[0] + grad[base + 1] * delta_r[1] + grad[base + 2] * delta_r[2];
     const double e = 0.5 * (neighbour[m] - prim[m]);
     const double eps2 = 1.0e-4 * scale[m] * scale[m];
-    out[m] = prim[m] + (u * (e * e + eps2) + e * (u * u + eps2)) / (u * u + e * e + 2.0 * eps2);
+    const double limited = (u * (e * e + eps2) + e * (u * u + eps2)) / (u * u + e * e + 2.0 * eps2);
+    out[m] = prim[m] + weight * limited + (1.0 - weight) * 0.5 * (u + e);
   }
   out[0] = fmax(out[0], 1.0e-12);
   out[4] = fmax(out[4], 1.0e-12);
@@ -625,8 +632,32 @@ inline double edge_limiter_scale_op2(const double *prim_center, const double *pr
   return phi;
 }
 
+// A node's pressure sensor |sum_j (p_j - p_i)| / sum_j (p_j + p_i) over its edges
+// (Jameson's), as sums: on the OAT15A grid about 1e-5 in boundary layers, up
+// to 3e-4 at the leading edge, 1e-3 to 0.15 through the shock.
+inline void zero_sensor_kernel(double *sensor) {
+  sensor[0] = 0.0;
+  sensor[1] = 0.0;
+}
+
+inline void edge_sensor_kernel(const double *prim_l, const double *prim_r, double *sensor_l, double *sensor_r) {
+  const double jump = prim_r[IDX_P] - prim_l[IDX_P];
+  const double sum = prim_r[IDX_P] + prim_l[IDX_P];
+  sensor_l[0] += jump;
+  sensor_l[1] += sum;
+  sensor_r[0] -= jump;
+  sensor_r[1] += sum;
+}
+
+// The limiter's weight at a node: 0 up to limiter_sensor, 1 from twice it.
+inline double sensor_weight_op2(const double *sensor) {
+  const double psi = fabs(sensor[0]) / fmax(sensor[1], 1.0e-300);
+  return fmin(1.0, fmax(0.0, psi / op2_limiter_sensor - 1.0));
+}
+
 inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const double *prim_l_center, const double *prim_r_center,
-                             const double *grad_l, const double *grad_r, const double *edge_weight, double *res_l, double *res_r) {
+                             const double *grad_l, const double *grad_r, const double *sensor_l, const double *sensor_r,
+                             const double *edge_weight, double *res_l, double *res_r) {
   // Reconstruct left and right edge states, compute the inviscid HLLC flux, and
   // subtract the viscous flux of the nodal states before accumulating
   // equal-and-opposite residuals at the edge endpoints.
@@ -635,9 +666,11 @@ inline void edge_flux_kernel(const double *coord_l, const double *coord_r, const
   if (op2_second_order) {
     const double delta_lr[3] = {0.5 * (coord_r[0] - coord_l[0]), 0.5 * (coord_r[1] - coord_l[1]), 0.5 * (coord_r[2] - coord_l[2])};
     const double delta_rl[3] = {-delta_lr[0], -delta_lr[1], -delta_lr[2]};
-    if (op2_limiter == 2) {
-      van_albada_reconstruct_op2(prim_l_center, prim_r_center, grad_l, delta_lr, prim_l);
-      van_albada_reconstruct_op2(prim_r_center, prim_l_center, grad_r, delta_rl, prim_r);
+    if (op2_limiter >= 2) {
+      const double weight =
+          op2_limiter == 3 ? fmax(sensor_weight_op2(sensor_l), sensor_weight_op2(sensor_r)) : 1.0;
+      van_albada_reconstruct_op2(prim_l_center, prim_r_center, grad_l, delta_lr, weight, prim_l);
+      van_albada_reconstruct_op2(prim_r_center, prim_l_center, grad_r, delta_rl, weight, prim_r);
     } else {
       const double phi_l = op2_limiter ? edge_limiter_scale_op2(prim_l_center, prim_r_center, grad_l, delta_lr) : 1.0;
       const double phi_r = op2_limiter ? edge_limiter_scale_op2(prim_r_center, prim_l_center, grad_r, delta_rl) : 1.0;
@@ -837,20 +870,44 @@ inline bool sa_terms_op2(const double *prim, const double *grad, const double *w
   const double chi = nu_tilde / fmax(nu, 1.0e-14);
   const double chi3 = chi * chi * chi;
   const double fv1 = chi3 / (chi3 + cv1 * cv1 * cv1);
-  const double fv2 = 1.0 - chi / (1.0 + chi * fv1);
-  // S_tilde kept positive smoothly (TMR's SA, note 1(c)): a hard clip of it
-  // switches in the buffer layer and holds the iteration in a limit cycle.
-  constexpr double c2 = 0.7, c3 = 0.9;
-  const double s_bar = nu_tilde * fv2 / (kappa * kappa * d * d);
-  const double s_tilde = fmax(s_bar >= -c2 * omega
-                                  ? omega + s_bar
-                                  : omega + omega * (c2 * c2 * omega + c3 * s_bar) / ((c3 - 2.0 * c2) * omega - s_bar),
-                              1.0e-14);
-  const double r = fmin(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
+  // du_i/dx_j, for the strain of Edwards' form and the compressibility term.
+  double du[3][3];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) du[i][j] = grad[3 * (IDX_U + i) + j];
+  double s_tilde, r;
+  if (op2_sa_edwards) {
+    // Edwards and Chandra (TMR's SA-noft2-Edwards): S_tilde from the strain,
+    // S^1/2 (1/chi + fv1), and r through tanh.
+    const double divergence = du[0][0] + du[1][1] + du[2][2];
+    double strain2 = -2.0 / 3.0 * divergence * divergence;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) strain2 += (du[i][j] + du[j][i]) * du[i][j];
+    s_tilde = fmax(sqrt(fmax(strain2, 0.0)) * (1.0 / chi + fv1), 1.0e-14);
+    r = tanh(nu_tilde / (s_tilde * kappa * kappa * d * d)) / tanh(1.0);
+  } else {
+    const double fv2 = 1.0 - chi / (1.0 + chi * fv1);
+    // S_tilde kept positive smoothly (TMR's SA, note 1(c)): a hard clip of it
+    // switches in the buffer layer and holds the iteration in a limit cycle.
+    constexpr double c2 = 0.7, c3 = 0.9;
+    const double s_bar = nu_tilde * fv2 / (kappa * kappa * d * d);
+    s_tilde = fmax(s_bar >= -c2 * omega
+                       ? omega + s_bar
+                       : omega + omega * (c2 * c2 * omega + c3 * s_bar) / ((c3 - 2.0 * c2) * omega - s_bar),
+                   1.0e-14);
+    r = fmin(nu_tilde / (s_tilde * kappa * kappa * d * d), 10.0);
+  }
   const double g = r + cw2 * (pow(r, 6) - r);
   const double fw = g * pow((1.0 + pow(cw3, 6)) / (pow(g, 6) + pow(cw3, 6)), 1.0 / 6.0);
   production[0] = cb1 * s_tilde * nu_tilde;
   destruction[0] = cw1 * fw * nu_tilde * nu_tilde / (d * d);
+  if (op2_sa_comp) {
+    // TMR's SA-comp (Shur et al., mixing layers): C5 nu~^2 / a^2 du_i/dx_j du_i/dx_j.
+    constexpr double c5 = 3.5;
+    double gradient2 = 0.0;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) gradient2 += du[i][j] * du[i][j];
+    destruction[0] += c5 * nu_tilde * nu_tilde * gradient2 * prim[0] / (op2_gamma * prim[4]);
+  }
   return true;
 }
 

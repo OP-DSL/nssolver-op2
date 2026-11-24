@@ -19,9 +19,14 @@ struct SolverConfig {
   double cfl = 0.1;
   int progress_interval = 10;
   int second_order = 0;
-  int limiter = 1;  // second order: 1 the edge-local limiter, 2 van Albada's, 0 none
+  // Second order: 1 the edge-local limiter, 2 van Albada's, 3 van Albada's where
+  // the pressure sensor exceeds limiter_sensor (shocks), 0 none.
+  int limiter = 1;
+  double limiter_sensor = 5.0e-4;
   int include_viscous = 0;
   int include_sa = 0;
+  int sa_comp = 0;     // TMR's SA-comp: the compressibility correction
+  int sa_edwards = 0;  // TMR's SA-noft2-Edwards
   double gamma = 1.4;
   double gas_constant = 287.05;
   double rho_floor = 1.0e-4;
@@ -106,6 +111,9 @@ inline bool apply_config_value(SolverConfig &cfg, const std::string &key, const 
   else if (key == "limiter") cfg.limiter = std::stoi(value);
   else if (key == "include_viscous") cfg.include_viscous = std::stoi(value);
   else if (key == "include_sa") cfg.include_sa = std::stoi(value);
+  else if (key == "sa_comp") cfg.sa_comp = std::stoi(value);
+  else if (key == "sa_edwards") cfg.sa_edwards = std::stoi(value);
+  else if (key == "limiter_sensor") cfg.limiter_sensor = std::stod(value);
   else if (key == "gamma") cfg.gamma = std::stod(value);
   else if (key == "gas_constant") cfg.gas_constant = std::stod(value);
   else if (key == "rho_floor") cfg.rho_floor = std::stod(value);

@@ -30,6 +30,9 @@ int op2_limiter = 1;
 int op2_include_viscous = 0;
 int op2_include_sa = 0;
 int op2_outlet_backflow = 0;
+int op2_sa_comp = 0;
+int op2_sa_edwards = 0;
+double op2_limiter_sensor = 5.0e-4;
 double op2_scale[6] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
 
 struct ResidualNorms {
@@ -46,6 +49,7 @@ struct Mesh {
   op_dat bface_normal, bface_area, bface_num_nodes, bface_type, bface_shares;
   op_dat bnode_dirichlet, bnode_wall;
   op_dat node_bc;  // the node's Dirichlet and no-slip entries (constrained_op2)
+  op_dat sensor;   // limiter 3: the pressure sensor's sums (edge_sensor_kernel)
 };
 
 static void usage(const char *argv0) {
@@ -131,6 +135,17 @@ static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res, d
   op_par_loop(zero_var_kernel, "zero_var_kernel", m.nodes,
               op_arg_dat(res, -1, OP_ID, NVAR_OP2, "double", OP_WRITE));
 
+  // The sensor of this state, which limiter 3's reconstruction reads.
+  if (op2_second_order && op2_limiter == 3) {
+    op_par_loop(zero_sensor_kernel, "zero_sensor_kernel", m.nodes,
+                op_arg_dat(m.sensor, -1, OP_ID, 2, "double", OP_WRITE));
+    op_par_loop(edge_sensor_kernel, "edge_sensor_kernel", m.edges,
+                op_arg_dat(prim, 0, m.edge_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(prim, 1, m.edge_to_nodes, NPRIM_OP2, "double", OP_READ),
+                op_arg_dat(m.sensor, 0, m.edge_to_nodes, 2, "double", OP_INC),
+                op_arg_dat(m.sensor, 1, m.edge_to_nodes, 2, "double", OP_INC));
+  }
+
   // In second-order mode the kernel performs edge-local limited reconstruction
   // directly from the endpoint gradients.
   op_par_loop(edge_flux_kernel, "edge_flux_kernel", m.edges,
@@ -140,6 +155,8 @@ static void flux_residual(const Mesh &m, op_dat prim, op_dat grad, op_dat res, d
               op_arg_dat(prim, 1, m.edge_to_nodes, NPRIM_OP2, "double", OP_READ),
               op_arg_dat(grad, 0, m.edge_to_nodes, NGRAD_OP2, "double", OP_READ),
               op_arg_dat(grad, 1, m.edge_to_nodes, NGRAD_OP2, "double", OP_READ),
+              op_arg_dat(m.sensor, 0, m.edge_to_nodes, 2, "double", OP_READ),
+              op_arg_dat(m.sensor, 1, m.edge_to_nodes, 2, "double", OP_READ),
               op_arg_dat(m.edge_weights, -1, OP_ID, 3, "double", OP_READ),
               op_arg_dat(res, 0, m.edge_to_nodes, NVAR_OP2, "double", OP_INC),
               op_arg_dat(res, 1, m.edge_to_nodes, NVAR_OP2, "double", OP_INC));
@@ -478,6 +495,9 @@ int main(int argc, char **argv) {
     op2_include_viscous = cfg.include_viscous;
     op2_include_sa = cfg.include_sa;
     op2_outlet_backflow = cfg.outlet_backflow == "freestream";
+    op2_sa_comp = cfg.sa_comp;
+    op2_sa_edwards = cfg.sa_edwards;
+    op2_limiter_sensor = cfg.limiter_sensor;
     for (int i = 0; i < 6; ++i) op2_freestream[i] = cfg.primitive[i];
 
     // The implicit scheme's reference state: rho, rho a, rho a^2 of the free
@@ -512,6 +532,9 @@ int main(int argc, char **argv) {
     op_decl_const(1, "int", &op2_include_viscous);
     op_decl_const(1, "int", &op2_include_sa);
     op_decl_const(1, "int", &op2_outlet_backflow);
+    op_decl_const(1, "int", &op2_sa_comp);
+    op_decl_const(1, "int", &op2_sa_edwards);
+    op_decl_const(1, "double", &op2_limiter_sensor);
     op_decl_const(NVAR_OP2, "double", op2_scale);
 
     const char *mesh_file = cfg.mesh_file.c_str();
@@ -565,6 +588,9 @@ int main(int argc, char **argv) {
     const bool full_gradients = cfg.second_order || cfg.include_viscous || cfg.include_sa;
 
     // Which components each node's boundary entries fix.
+    m.sensor = op_decl_dat_temp_char(m.nodes, 2, "double", sizeof(double), "sensor");
+    op_par_loop(zero_sensor_kernel, "zero_sensor_kernel", m.nodes,
+                op_arg_dat(m.sensor, -1, OP_ID, 2, "double", OP_WRITE));
     m.node_bc = op_decl_dat_temp_char(m.nodes, 2, "int", sizeof(int), "node_bc");
     op_par_loop(zero_node_bc_kernel, "zero_node_bc_kernel", m.nodes,
                 op_arg_dat(m.node_bc, -1, OP_ID, 2, "int", OP_WRITE));
