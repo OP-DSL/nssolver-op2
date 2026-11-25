@@ -6,6 +6,9 @@ This case uses the public SU2 ONERA M6 inviscid tutorial mesh and freestream set
 - Source mesh: `public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2`
 - Source config: `public-data/onera_m6/inv_ONERAM6.cfg`
 
+The scripts do not run as shipped, and the values below predate the current numerics:
+`VALIDATION.md` section 10.
+
 ## Download and conversion
 
 Bootstrap the public tutorial assets with:

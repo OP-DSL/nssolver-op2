@@ -122,7 +122,8 @@ Any config key can be given on the command line as `--key value`. The scheme
 and the linear solve's options (`pc`, `pmat`, `op`, `partition`, `reorder`,
 ...) are in `docs/OP2_SOLVER.md`, section 17; dual time stepping for unsteady
 flow (`--time-step`, `--physical-steps`) in section 18, and the verification
-runs (TMR flat plate, cylinder, circular arc, OAT15A buffet) in section 19.
+runs' results (TMR flat plate, cylinder, circular arc, OAT15A buffet) in section
+19; `docs/VALIDATION.md` describes how to run them.
 
 A planar dual-time run's snapshots (`--snapshot-interval N`) render as a
 video of a symmetry plane, after a sanity check of the snapshots:

@@ -663,7 +663,7 @@ Post-processing:
 - `nssolver_hdf5_to_vtk_helper` (`scripts/hdf5_to_vtk.sh`) writes a solution's nodes with density,
   pressure and velocity as a legacy VTK point cloud
 - `scripts/airfoil/video.py` renders a planar case's dual-time snapshots as a video of one
-  symmetry plane (section 19)
+  symmetry plane (`docs/VALIDATION.md` section 9)
 
 ## 16. Validation Strategy
 
@@ -677,7 +677,8 @@ The OP2 path is validated directly on non-periodic cases:
 The shipped validation scripts live under `scripts/` and `tests/`; `docs/VALIDATION.md` gives
 their residual bands. `tests/test_implicit.sh` runs the implicit scheme on the bump across OP2's
 backends, both solver libraries and the options of section 17. The physics is verified against
-reference solutions and experiments by the runs of section 19.
+reference solutions and experiments by the cases of `docs/VALIDATION.md` sections 6-10
+(section 19).
 
 ## 17. Implicit Pseudo-Time Stepping
 
@@ -805,41 +806,18 @@ Implementation:
 
 ## 19. Verification Runs
 
-- `scripts/tmr/flatplate.sh`: the NASA Turbulence Modeling Resource's 2D zero-pressure-gradient
-  flat plate (SA, M 0.2, Re 5e6 per unit length) on its PLOT3D grid family (`plot3d2d`
-  preprocessing), with TMR's boundaries (total-pressure inflow, Riemann top, pressure outflow);
-  skin friction at x = 0.97 and drag against the CFL3D and FUN3D reference values
-  (`scripts/tmr/flatplate_forces.py`). The skin friction matches FUN3D's grid by grid (0.0026957
-  against 0.0026950 on the 69x49 grid, 0.0027037 against 0.0027045 on the 273x193 one).
-- `scripts/cylinder/run.sh`: laminar vortex shedding behind a circular cylinder at Re 100
-  (`cylinder` preprocessing, a periodic O-grid), by dual time stepping; Strouhal number, mean drag
-  and lift amplitude (`scripts/cylinder/forces.py`): 0.163, 1.36 and 0.32 on the 192x128 grid at
-  50 steps a period.
-- `scripts/airfoil/run.sh`: transonic airfoils by SA, steady or by dual time stepping, the free
-  stream from Mach, Reynolds number, temperature and incidence (`freestream.py`). Lift, drag and
-  the oscillation's Strouhal number from the history (`forces.py`), the wall's pressure from
-  `nssolver_op2_benchmark_postprocess_helper wall`.
-  - The 18% circular arc (McDevitt et al.; self-excited shock oscillation at zero incidence, M 0.76,
-    Re 11e6): Strouhal number 0.157 (the experiment's reduced frequency 0.49 is 0.156), lift
-    $\pm 0.33$.
-  - The ONERA OAT15A on the buffet workshop's grid (M 0.73, Re 3e6; its geometry stays ONERA's and
-    outside this repository), with SA-comp (`configs/oat15a.cfg`). Standard SA damps the shock's
-    oscillation at every angle tried (3.9 to 5.5 degrees); with SA-comp buffet sets in at about
-    3.2 degrees (the experiment's onset lies between 3.1 and 3.25): $\Delta C_L$ 0.105 at 3.25,
-    0.220 at 3.5, 0.317 at 3.9, Strouhal number 0.070-0.071 (experiment 0.066), the same with
-    time steps of 0.24 and 0.06 c/U. The shock's pressure fluctuation peaks about 15% above the
-    experiment's and 0.04-0.05 c further aft (Cp RMS 0.36 at x/c 0.50 against 0.31 at 0.45 at
-    3.5 degrees). The mean and RMS pressure over whole periods come from the run's snapshots
-    (`snapshot_interval`, about 20 a period), each turned into a wall file
-    (`scripts/cl/wall_series.sbatch`), against the experiment's (`cpstats.py`).
-- `scripts/airfoil/video.py`: a video of a planar dual-time run from its snapshots (about 100 a
-  period for a smooth one): the lower symmetry plane, whose boundary quads are the section's cells,
-  interpolated linearly onto the frame's pixels, the Mach number with the sonic line (or numerical
-  schlieren, or Cp) above the lift's history; `scripts/cl/video.sbatch` renders one on a CPU node.
-  Its `check` mode compares the two symmetry planes, interpolates an exact linear field, reads the
-  free stream far away and matches each snapshot's pressure lift to the history's at its step.
-  On the OAT15A at 3.5 degrees (320 snapshots over five periods) the planes' pressures agree to
-  $2.3\cdot10^{-4}$ of the free stream's at 99.9% of the nodes; the shock, a little apart on the
-  two, differs by up to 1.3% in pressure and 1.7% in density at a few dozen nodes. The history's
-  lift less the snapshots' pressure lift varies by $6\cdot10^{-5}$ at their own steps (its mean,
-  $10^{-4}$, is the viscous lift), against $2\cdot10^{-3}$ a step off.
+`docs/VALIDATION.md` (sections 6-10) gives each verification case's set-up, commands,
+post-processing and results:
+
+- The NASA TMR zero-pressure-gradient flat plate (SA, M 0.2, Re 5e6): the skin friction at
+  x = 0.97 matches FUN3D's on the same grid to 0.03% from the 69x49 grid to the 545x385 one
+  (0.0026957 against 0.0026950 on 69x49).
+- Laminar vortex shedding behind a cylinder at Re 100, by dual time stepping: Strouhal number
+  0.163, mean drag 1.36 and lift amplitude 0.32 on the 192x128 grid at 50 steps a period.
+- The 18% circular arc (SA, M 0.76, Re 11e6): self-excited shock oscillation at Strouhal number
+  0.157 (the experiment's reduced frequency 0.49 is 0.156), lift $\pm 0.33$.
+- The ONERA OAT15A buffet (SA-comp, M 0.73, Re 3e6): onset at about 3.2 degrees (experiment
+  3.1-3.25), $\Delta C_L$ 0.105, 0.220 and 0.317 at 3.25, 3.5 and 3.9 degrees, Strouhal number
+  0.070-0.071 (experiment 0.066), the same with time steps of 0.24 and 0.06 c/U; the shock's
+  pressure fluctuation peaks about 15% above the experiment's and 0.04-0.05 c further aft.
+  Standard SA damps the shock's oscillation at every incidence tried (3.9 to 5.5 degrees).

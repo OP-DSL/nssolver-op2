@@ -2,11 +2,18 @@
 
 ## Overview
 
-This directory contains OP2 smoke and regression workflows. They assume the shared repository layout:
+Two kinds of checks:
 
-- OP2 app build in `./`
+- regression scripts (sections 1-5) that run in minutes and check residual levels against bands;
+- verification cases (sections 6-10) that run the solver against reference solutions and
+  experiments, mostly on a GPU, and are judged by their physical results.
+
+They assume the shared repository layout:
+
+- OP2 app build in `./` (or `build/` with CMake, `BIN=...` in the case scripts)
 - preprocessed meshes in `meshes-op2`
 - OP2 outputs in `outputs-op2`
+- helper executables in `.helpers/bin` (`scripts/build_helpers.sh`)
 
 The OP2 app does not generate meshes directly. Meshes are produced by the OP2-local wrapper:
 
@@ -14,7 +21,7 @@ The OP2 app does not generate meshes directly. Meshes are produced by the OP2-lo
 ./scripts/preprocess_mesh.sh
 ```
 
-## Scripts
+## Regression scripts
 
 ### 1. Smoke test
 
@@ -62,7 +69,8 @@ Expected behavior:
 bash scripts/run_flatplate_validation.sh
 ```
 
-This runs OP2 on `flatplate_develop`, checks the final residual band, and postprocesses the OP2 result into benchmark CSV files:
+This runs OP2 on `flatplate_develop`, checks the final residual band, and postprocesses the OP2
+result into benchmark CSV files:
 
 - wall skin friction `Cf`
 - wall pressure coefficient `Cp`
@@ -74,7 +82,8 @@ Current expected status:
   `4.0e-08 <= L2(rho) <= 4.15e-08`
 - wall/profile CSV files are generated and non-empty
 
-The script should pass when the OP2 implementation remains within the validated residual band and produces usable benchmark outputs.
+The script should pass when the OP2 implementation remains within the validated residual band
+and produces usable benchmark outputs.
 
 ### 4. Implicit scheme
 
@@ -89,11 +98,252 @@ OpenMP, CUDA and their MPI builds) and the linear-solve options of
 `partition`, `reorder`): 35 runs. Each must reduce `L2(rho)` below a tenth of
 its first iteration's, and the runs of one algorithm must agree to 1%.
 
-### 5. Verification against references
+### 5. Build variants and formula meshes
 
-The TMR flat plate, the cylinder at Re 100, the circular arc and the OAT15A
-buffet are run by their scripts against reference solutions and experiments:
-`OP2_SOLVER.md` section 19.
+```bash
+COMPILE_TESTS=TRUE RUN_TESTS=TRUE bash tests/nssolver_op2_test.sh
+bash tests/test_formula_meshes.sh
+```
+
+The first builds every Makefile variant of the app (seq, genseq, OpenMP, CUDA, and their MPI
+builds) and runs each on `box`, `bump` and `flatplate_develop`, checking that the run completes;
+the second only checks that the formula-driven 3D meshes (`bump3d`, `axisymmetric_body`,
+`naca_wing`) preprocess.
+
+## Verification cases
+
+| Section | Case | Checks | Result | Cost |
+|---|---|---|---|---|
+| 6 | TMR flat plate | steady SA, viscous wall, TMR boundaries | $C_f$ = FUN3D's to 0.03% on each grid from 69x49 | three coarsest 1.5 min on a laptop GPU, two finest 9 min on an A100 |
+| 7 | Cylinder, Re 100 | laminar unsteady NS, dual time | St 0.163, $\bar C_D$ 1.36, $C_L'$ 0.32 | 15 min on a V100 |
+| 8 | 18% circular arc | transonic shock oscillation, SA URANS | St 0.157 (experiment 0.156) | 2.7 h on a V100 |
+| 9 | OAT15A | transonic buffet onset, amplitude, frequency, wall pressure | onset 3.2° (experiment 3.1-3.25°), St 0.070 (0.066) | 4 h per run on a V100 |
+| 10 | ONERA M6 | inviscid 3D wing on an SU2 mesh | regression values; does not run as shipped | 31 s on a CPU core |
+
+Cases 6-9 each have a script that preprocesses the mesh, runs the solver and prints the
+case's figures of merit; `BIN` names the executable (`build/nssolver_op2_seq` by
+default) and `LAUNCH` an optional launcher such as `mpirun -np 4`. On the `cl`
+cluster the `scripts/cl/*.sbatch` jobs run the same scripts on one GPU
+(`ARCH=70` with `-w erdos|wald` for the V100 build of `scripts/cl/build.sbatch`)
+and leave their logs in `~/op2sol/logs`. Options after a script's name go to every
+run; the jobs pass `--solve-config configs/solve.json` (GMRES with block Jacobi or ILU
+to a relative residual of 1e-3, `OP2_SOLVER.md` section 17), as the commands below
+do.
+
+### 6. TMR flat plate
+
+The NASA Turbulence Modeling Resource's 2D zero-pressure-gradient flat plate, SA
+verification case: M 0.2, Re 5e6 per unit length, T 300 K, free-stream
+$\tilde\nu = 3\nu$ (`configs/tmr_flatplate.cfg`: second order unlimited as the
+TMR reference runs, implicit, CFL 10 growing by 1.3 to 1e4, 300 iterations).
+TMR's boundaries: total pressure and temperature inflow at x = -1/3, symmetry
+ahead of the plate, the plate from x = 0 to 2, pressure outflow at x = 2 and a
+Riemann far field at the top.
+
+```bash
+BIN=build/nssolver_op2_cuda GRIDS="35x25 69x49 137x97" scripts/tmr/flatplate.sh \
+  --solve-config configs/solve.json
+sbatch scripts/cl/flatplate.sbatch          # 273x193 and 545x385, 250 iterations
+```
+
+The script fetches TMR's PLOT3D grid family (one archive from nasa.gov),
+preprocesses each grid (`plot3d2d`), runs it and prints the skin friction at
+x = 0.97 and the drag (`scripts/tmr/flatplate_forces.py`) against CFL3D's on the
+545x385 grid. Outputs: `outputs-op2/tmr/flatplate_<grid>.{h5,log}` and
+`flatplate_<grid>_wall.csv`.
+
+| Grid | $C_f(0.97)$ | FUN3D | $C_D$ | FUN3D |
+|---|---|---|---|---|
+| 35x25 | 0.0026779 | 0.0026674 | 0.0027987 | 0.0027739 |
+| 69x49 | 0.0026957 | 0.0026950 | 0.0028254 | 0.0028226 |
+| 137x97 | 0.0027016 | 0.0027022 | 0.0028366 | 0.0028400 |
+| 273x193 | 0.0027037 | 0.0027045 | 0.0028431 | 0.0028479 |
+| 545x385 | 0.0027046 | 0.0027054 | 0.0028478 | 0.0028525 |
+
+From 69x49 on the skin friction matches FUN3D's on the same grid to 0.03%, and
+the drag to 0.2%. The density residual falls six to seven orders in about 100
+iterations (to round-off on 35x25) and then levels off at an L2 norm of
+$10^{-12}$ to $3\cdot10^{-12}$, whatever the CFL number or linear solver: the
+remainder sits on a few pairs of neighbouring nodes with equal and opposite
+mass residuals (on 69x49 at the wall at x = 1.57 and next to the symmetry plane
+at x = -0.26). The figures above no longer move: 250 more iterations on the
+545x385 grid change $C_f$ in the seventh digit. A fully prescribed inflow instead of TMR's raises $C_f$ by 0.45%: the
+boundaries matter at this level.
+
+### 7. Cylinder at Re 100
+
+Laminar vortex shedding behind a circular cylinder: Re 100 on the diameter,
+M 0.2, T 300 K (`configs/cylinder_re100.cfg`: second order unlimited, dual time
+stepping, BDF2). The mesh is a periodic O-grid (`cylinder` preprocessing):
+`ntheta` by `nr` points out to 30 diameters, the first off the wall at `FIRST`,
+one cell of 0.1 diameters across the span.
+
+```bash
+BIN=build/nssolver_op2_cuda GRID="192 128" FIRST=0.0025 DT=1.75e-3 TRIGGER=300 STEPS=1200 \
+  scripts/cylinder/run.sh --solve-config configs/solve.json --inner-iterations 30
+GRID="192 128" FIRST=0.0025 DT=1.75e-3 TRIGGER=300 STEPS=1200 sbatch scripts/cl/cylinder.sbatch
+```
+
+The run starts with a 1% cross flow for `TRIGGER` steps to break the symmetry,
+then runs `STEPS` steps in the plain free stream from it, and prints the
+Strouhal number, mean drag and lift amplitude over the last five periods
+(`scripts/cylinder/forces.py`). The period is about 0.0873, so `DT` 1.75e-3 is
+50 steps a period.
+
+| Grid | Steps a period | St | $\bar C_D$ | $C_L'$ |
+|---|---|---|---|---|
+| 96x64 | 50 | no shedding ($C_D$ 1.148) | | |
+| 192x128 | 50 | 0.1626 | 1.358 | 0.324 |
+| 192x128 | 100 | 0.1633 | 1.359 | 0.326 |
+| 384x256 (`FIRST` 0.00125) | 50 | 0.1638 | 1.362 | 0.326 |
+| Williamson (1989), Park et al. (1998) | | 0.164-0.166 | 1.33-1.37 | 0.32-0.34 |
+
+On 96x64 the upwind scheme's dissipation at M 0.2 suppresses the shedding. A
+step takes about 7 inner iterations to `inner_tolerance` 1e-3.
+
+### 8. 18% circular arc
+
+The biconvex circular-arc section of McDevitt et al. (1976): self-excited shock
+oscillations at zero incidence, M 0.76, Re 11e6, T 300 K, SA
+(`configs/circular_arc.cfg`: van Albada limiter, `update_limit` 0.2, dual time
+stepping). The O-grid has 201 points around the section and 129 out from it
+(`nssolver_preprocess_op2_helper circular_arc meshes-op2/arc/arc18.h5
+surface_points=201 normal_points=129`; `scripts/cl/airfoil.sbatch` makes it).
+
+```bash
+CASE=circular_arc MACH=0.76 ALPHA=0 DT=1.9e-4 STEPS=2000 BIN=build/nssolver_op2_cuda \
+  scripts/airfoil/run.sh --solve-config configs/solve.json
+CASE=circular_arc MACH=0.76 ALPHA=0 DT=1.9e-4 STEPS=2000 sbatch scripts/cl/airfoil.sbatch
+```
+
+`scripts/airfoil/run.sh` sets the free stream from Mach, Reynolds number,
+temperature and incidence (`scripts/airfoil/freestream.py`), starts from it
+uniformly, and prints the Strouhal number and the lift and drag (mean and
+amplitude) over the last four periods (`scripts/airfoil/forces.py`). 2000 steps
+of 1.9e-4 s are 15.8 periods of 127 steps; the oscillation sets in by itself.
+
+| | St | $C_L$ | $C_D$ |
+|---|---|---|---|
+| Reference run (A100) | 0.1577 | $\pm 0.3276$ | 0.0670 |
+| Rerun at the current numerics (V100) | 0.1574 | $\pm 0.3283$ | $0.0667 \pm 0.0089$ |
+| McDevitt et al., reduced frequency 0.49 | 0.156 | | |
+
+The rerun agrees with the reference run to 0.2%; 143 of its 2000 steps reach the
+30 inner iterations before `inner_tolerance` 1e-3.
+
+### 9. OAT15A transonic buffet
+
+The ONERA OAT15A supercritical section (Jacquin et al. 2009), test case 1 of the
+AIAA DPW-8/AePW-4 buffet working group: M 0.73, Re 3e6 on the chord, T 271 K,
+buffet from about 3.1-3.25 degrees at 68.75 Hz on the 0.23 m model (Strouhal
+number 0.066). `configs/oat15a.cfg`: SA with the compressibility correction
+(SA-comp, `OP2_SOLVER.md` section 12), van Albada limiter, `update_limit` 0.2.
+
+**Data.** The grid (S. Deck's committee grid) and the experiment's mean and RMS
+pressure come from the working group's site,
+`dpw.larc.nasa.gov/DPW8/ONERA_OAT15A/` (`ONERA-Deck_Grids.REV00/Deck-ONERA-OAT15A.zip`,
+`Experimental_Data/onera-oat15a.zip` with `Cp.dat` and `Cp_rms.dat`). The
+geometry is ONERA's intellectual property and stays outside this repository (on
+`cl` in `~/op2sol/data/oat15a`). `scripts/cl/airfoil.sbatch` preprocesses it to
+unit chord, one cell across a span of 0.01 (799104 nodes, 399552 a plane):
+
+```bash
+nssolver_preprocess_op2_helper plot3d_blocks meshes-op2/oat15a/deck.h5 grid_OAT15A_Deck.x \
+  scale=4.3478260869565215 wall_x0=-0.01 wall_x1=1.01 wall_y=0.2
+```
+
+**Runs.** One unit of time, c/U, is 4.15 ms; a buffet period is about 14.2 c/U.
+All through `scripts/cl/airfoil.sbatch` on a V100 (`ARCH=70 sbatch -w wald`),
+with `EXTRA` holding the options after the common ones,
+`--implicit-cfl 10 --implicit-cfl-growth 2 --implicit-cfl-max 1e5 --solve-config configs/solve_dual.json`:
+
+1. A first-order steady start, `ALPHA=3.9 ITERATIONS=600 TAG=oat15a_a3.9_first`,
+   `EXTRA="--second-order 0 --implicit-cfl 10 --implicit-cfl-growth 1.05 --implicit-cfl-max 200"`.
+   A second-order steady run diverges at buffet incidences: there is no steady state.
+2. Dual time from it at `DT=1e-3` (0.24 c/U, 59 steps a period), `--inner-iterations 20`,
+   until the cycle has settled: 3 to 6 periods (300-400 steps a run, chained by `RESTART`).
+   A new incidence restarts from a settled cycle at a nearby one.
+3. Statistics at `DT=2.5e-4` (236 steps a period), `STEPS=800` (3.4 periods),
+   `--inner-iterations 30 --snapshot-interval 10`.
+
+The runs reported here began with standard SA at 3.9 degrees (items 1 and 2 with
+400 steps, then 800 steps at 2.5e-4), switched to SA-comp at 3.9 and 3.5 degrees for 300 steps at
+1e-3, continued 3.5 degrees for 300 more, and started 3.25 and 3.0 degrees (400
+steps) from that. A step at 1e-3 takes about 27 s; at 2.5e-4 a run makes about
+210 steps an hour.
+
+**Post-processing.**
+
+```bash
+python3 scripts/airfoil/forces.py outputs-op2/oat15a/TAG.history.csv 0.73 3e6 271 ALPHA 0.01
+CASE=oat15a TAG=TAG sbatch scripts/cl/wall_series.sbatch     # each snapshot's wall state
+python3 scripts/airfoil/cpstats.py outputs-op2/oat15a/TAG.history.csv outputs-op2/oat15a/wall TAG \
+  0.73 3e6 271 ALPHA 2.5e-4 Cp.dat Cp_rms.dat cp_TAG.png
+```
+
+`cpstats.py` averages over whole periods, between the first and last lift
+maxima the snapshots cover, and prints the lift's mean and swing, the Strouhal
+number, the shock's travel (the steepest pressure rise on the upper surface)
+and the RMS peak, with the experiment's.
+
+| Model, α | $\Delta C_L$ | St | $\bar C_L$ | Shock travel, x/c | Peak $C_p'$ (x/c) | Experiment's peak |
+|---|---|---|---|---|---|---|
+| SA, 3.9-4.5° | decays, 0.86 a period | 0.074-0.075 | | | | |
+| SA, 5.5° | steady | | 0.967 | | | |
+| SA-comp, 3.0° | decays to steady | | | | | |
+| SA-comp, 3.25° | 0.105 | | | | | 0.22 |
+| SA-comp, 3.5° | 0.220 | 0.0705 | 0.937 | 0.385-0.546 | 0.359 (0.50) | 0.31 (0.45) |
+| SA-comp, 3.9° | 0.317 | 0.0708 | 0.925 | 0.31-0.55 | 0.391 (0.49) | 0.336 (0.45) |
+
+Standard SA damps the shock's oscillation at every incidence tried, as most
+URANS-SA studies of this case report; SA-comp sustains it. $\Delta C_L^2$ grows
+linearly with incidence: through 3.25 and 3.5 degrees it puts the onset at 3.18
+degrees (experiment 3.1-3.25) and predicts 0.329 at 3.9 (0.317 run). The cycle
+at 3.9 degrees is the same at 1e-3 and 2.5e-4 ($\Delta C_L$ 0.316 and 0.317).
+The lower surface and the leading-edge plateau match the experiment's mean
+pressure; the shock's pressure fluctuation peaks about 15% above the
+experiment's and 0.04-0.05 c further aft, and the mean pressure rise lies 0.03-0.05 c aft of
+the experiment's.
+
+**Video.** `scripts/airfoil/video.py` renders a dual-time run's snapshots as a
+video of the lower symmetry plane (its boundary quads are the section's cells),
+interpolated linearly onto the frame's pixels: the Mach number with the sonic
+line, numerical schlieren or $C_p$, above the lift's history.
+
+```bash
+CASE=oat15a TAG=TAG ALPHA=3.5 sbatch scripts/cl/video.sbatch        # FIELD=schlieren|cp, EXTRA="--stills 220,344"
+```
+
+A smooth video needs about 100 snapshots a period (`--snapshot-interval 2` at
+2.5e-4): 480 steps from the 3.5-degree statistics run took 2 h 15 min on a V100
+and wrote 240 snapshots of 77 MB, which render in 2 minutes on 16 CPU cores. The job
+first runs the script's `check`, which on these snapshots gives:
+
+- an exact linear field interpolates to $10^{-15}$;
+- the far field, beyond 63 chords, holds M 0.730 and $C_p$ within $\pm 0.004$;
+- the two symmetry planes' pressures agree to $2.3\cdot10^{-4}$ of the free stream's at 99.9% of
+  the nodes; the shock, a little apart on the two, differs by up to 0.8% in pressure and 1.6% in
+  density at a few dozen nodes, and the planes' nodes carry up to 0.6% of the free stream's speed
+  through them (`OP2_SOLVER.md` section 8): one plane is the section;
+- the history's lift less the snapshots' pressure lift varies by $6\cdot10^{-5}$ at their own steps
+  (its mean, $10^{-4}$, is the viscous lift), against $2\cdot10^{-3}$ a step off: each frame
+  shows its step.
+
+### 10. ONERA M6
+
+An inviscid 3D wing on SU2's public mesh, 100 explicit iterations at CFL 0.01
+against regression values, not a converged solution against a reference:
+`docs/ONERA_M6_VALIDATION.md` (`scripts/run_onera_m6_validation.sh`,
+`scripts/compare_onera_m6_orders.sh`).
+
+The case does not run as shipped. Its post-processing helper
+(`src/onera_m6_validation.cpp`, for the forces and surface $C_p$) has not
+compiled since `update_primitives` was removed, and the Makefile's
+`helper-tools` does not build it. The scripts preprocess the mesh only when
+`meshes-op2/onera_m6.h5` is missing, and one written before the current mesh
+contract (`OP2_SOLVER.md` section 14) crashes the solver: delete it first.
+Preprocessed afresh, the first-order run takes 31 s on one core and ends at
+L2/L2_0 0.720, against the 0.664 recorded before the numerics changed.
 
 ## Manual workflow
 
