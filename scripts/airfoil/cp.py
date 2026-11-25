@@ -36,37 +36,50 @@ def shock(xs, cps):
     return at
 
 
-def main():
-    wall, mach, re_, t, alpha, exp_path = sys.argv[1], *map(float, sys.argv[2:6]), sys.argv[6]
-    fs = freestream(mach, re_, t, alpha)
-    p_inf = fs["p"]
-    q = 0.5 * fs["rho"] * fs["speed"] ** 2
-    # The wall's nodes in the file's order, which follows the section around
-    # (the grid's first line), split at the leading edge; a blunt trailing
-    # edge's base (x of 1) left out. The half higher up is the upper surface.
+def wall_sides(wall, p_inf, q):
+    """(upper, lower), each [(x, Cp)] by x, from a wall file. Its nodes follow
+    the section around (the grid's first line): split at the leading edge, a
+    blunt trailing edge's base (x of 1) left out; the half higher up is the
+    upper surface."""
     rows = [r for r in csv.DictReader(open(wall)) if abs(float(r["z"])) < 1e-9 and float(r["x"]) < 0.999]
     le = min(range(len(rows)), key=lambda i: float(rows[i]["x"]))
     halves = [rows[:le + 1], rows[le:]]
     halves.sort(key=lambda h: -sum(float(r["y"]) for r in h) / len(h))
-    upper, lower = [sorted((float(r["x"]), (float(r["p"]) - p_inf) / q) for r in h) for h in halves]
+    return [sorted((float(r["x"]), (float(r["p"]) - p_inf) / q) for r in h) for h in halves]
 
-    exp, zone = [], None
-    for line in open(exp_path):
+
+def zone(path, alpha):
+    """The (x/c, value) pairs of a Tecplot-style file's zone "... a = ALPHA"."""
+    points, at = [], None
+    for line in open(path):
         m = re.search(r'ZONE.*a\s*=\s*([-0-9.]+)', line)
         if m:
-            zone = float(m.group(1))
+            at = float(m.group(1))
             continue
-        if zone is not None and abs(zone - alpha) < 1e-6 and line.strip() and line.strip()[0] in "0123456789-.":
-            exp.append(tuple(map(float, line.split()[:2])))
-    if not exp:
-        sys.exit(f"no zone a = {alpha} in {exp_path}")
-    # The experiment's points run around the section: split where x turns.
-    turn = max(range(len(exp)), key=lambda i: exp[i][0])
-    exp_a, exp_b = exp[:turn + 1], exp[turn:]
-    # The side with the lower mean pressure is the upper surface.
-    if sum(c for _, c in exp_a) / len(exp_a) > sum(c for _, c in exp_b) / len(exp_b):
-        exp_a, exp_b = exp_b, exp_a
-    exp_up, exp_lo = sorted(exp_a), sorted(exp_b)
+        if at is not None and abs(at - alpha) < 1e-6 and line.strip() and line.strip()[0] in "0123456789-.":
+            points.append(tuple(map(float, line.split()[:2])))
+    if not points:
+        sys.exit(f"no zone a = {alpha} in {path}")
+    return points
+
+
+def experiment_sides(points):
+    """(upper, lower) of an experiment's Cp points, which run around the
+    section: split where x turns; the side of lower mean pressure is the
+    upper surface."""
+    turn = max(range(len(points)), key=lambda i: points[i][0])
+    a, b = points[:turn + 1], points[turn:]
+    if sum(c for _, c in a) / len(a) > sum(c for _, c in b) / len(b):
+        a, b = b, a
+    return sorted(a), sorted(b)
+
+
+def main():
+    wall, mach, re_, t, alpha, exp_path = sys.argv[1], *map(float, sys.argv[2:6]), sys.argv[6]
+    fs = freestream(mach, re_, t, alpha)
+    upper, lower = wall_sides(wall, fs["p"], 0.5 * fs["rho"] * fs["speed"] ** 2)
+    exp = zone(exp_path, alpha)
+    exp_up, exp_lo = experiment_sides(exp)
 
     def rms(sim, ref):
         xs, cs = [x for x, _ in sim], [c for _, c in sim]

@@ -763,4 +763,7 @@ Implementation:
   arc (McDevitt et al.; self-excited shock oscillation at zero incidence) and the ONERA OAT15A on
   the buffet workshop's grid (shock buffet; its geometry stays ONERA's and outside this
   repository). Lift, drag and the oscillation's Strouhal number from the history (`forces.py`),
-  the wall's pressure from `nssolver_op2_benchmark_postprocess_helper wall`.
+  the wall's pressure from `nssolver_op2_benchmark_postprocess_helper wall`. For buffet the mean
+  and RMS pressure over whole periods come from the run's snapshots (`snapshot_interval`, about 20
+  a period), each turned into a wall file (`scripts/cl/wall_series.sbatch`), against the
+  experiment's (`cpstats.py`).
