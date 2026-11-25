@@ -11,16 +11,20 @@ Detailed mathematics and implementation notes live in:
 
 The OP2 application ports the main non-periodic solver path to OP2 sets, maps, dats, and C-style kernels.
 
-What is included:
+What is included (the numerics in `docs/OP2_SOLVER.md`):
 
-- OP2 sequential solver driver in `nssolver_op2.cpp`
-- Edge-local second-order MUSCL reconstruction
-- Thin-layer viscous fluxes
-- Spalart-Allmaras source term support
-- HDF5 mesh preprocessing using the existing C++20 mesh code
-- HDF5 solution output from the OP2 app
-- Separate HDF5-to-VTK conversion step
-- Configs for `box`, `bump`, `hydra`, `hydra_benchmark`, and `flatplate_develop`
+- the OP2 solver driver in `nssolver_op2.cpp`, for every OP2 backend (seq, genseq, OpenMP, CUDA,
+  MPI)
+- HLLC fluxes, second-order MUSCL reconstruction with an edge-local or van Albada limiter
+- full Navier-Stokes viscous fluxes, Spalart-Allmaras (optionally SA-comp)
+- explicit RK4 and implicit (Newton-Krylov) pseudo-time stepping, and dual time stepping for
+  unsteady flow
+- HDF5 mesh preprocessing using the existing C++20 mesh code (Hydra, procedural, PLOT3D and
+  multi-block planar grids)
+- HDF5 solution output, snapshots and force histories; wall extraction, VTK conversion and
+  videos of planar cases
+- configs for `box`, `bump`, `hydra`, `hydra_benchmark`, `flatplate_develop`, the TMR flat
+  plate, the cylinder, the circular arc and the OAT15A
 
 What is not yet ported to OP2:
 
@@ -116,15 +120,24 @@ BUILD_DIR=build tests/test_implicit.sh
 
 Any config key can be given on the command line as `--key value`. The scheme
 and the linear solve's options (`pc`, `pmat`, `op`, `partition`, `reorder`,
-...) are in `docs/OP2_SOLVER.md`, section 17.
+...) are in `docs/OP2_SOLVER.md`, section 17; dual time stepping for unsteady
+flow (`--time-step`, `--physical-steps`) in section 18, and the verification
+runs (TMR flat plate, cylinder, circular arc, OAT15A buffet) in section 19.
+
+A planar dual-time run's snapshots (`--snapshot-interval N`) render as a
+video of a symmetry plane, after a sanity check of the snapshots:
+
+```bash
+python3 scripts/airfoil/video.py check MESH.h5 OUTDIR TAG OUTDIR/TAG.history.csv MACH RE T ALPHA
+python3 scripts/airfoil/video.py render MESH.h5 OUTDIR TAG OUTDIR/TAG.history.csv MACH RE T ALPHA out.mp4
+```
 
 ## Formula-Driven Preprocessing Meshes
 
 The preprocessing helper supports procedural mesh generation with explicit size
 and shape overrides via `key=value` arguments. `bump3d` and
-`axisymmetric_body` now default to the stronger parameter sets that gave the
-clearest compression and turning features in the initial solver runs, so the
-plain case names are the recommended starting points.
+`axisymmetric_body` default to parameter sets with clear compression and
+turning features, so the plain case names are the recommended starting points.
 
 ```bash
 bash scripts/preprocess_mesh.sh bump3d meshes-op2/bump3d.h5
@@ -160,9 +173,9 @@ Available procedural cases:
 
 OP2 solver setups for the documented defaults:
 
-- [configs/bump3d.cfg](/home/ireguly/nssolver-op2/configs/bump3d.cfg): stronger inviscid bump-channel run using `meshes-op2/bump3d.h5`
-- [configs/axisymmetric_body.cfg](/home/ireguly/nssolver-op2/configs/axisymmetric_body.cfg): stronger inviscid body-of-revolution run using `meshes-op2/axisymmetric_body.h5`
-- [configs/naca_wing.cfg](/home/ireguly/nssolver-op2/configs/naca_wing.cfg): baseline finite-wing run using `meshes-op2/naca_wing.h5`
+- [configs/bump3d.cfg](configs/bump3d.cfg): inviscid bump-channel run using `meshes-op2/bump3d.h5`
+- [configs/axisymmetric_body.cfg](configs/axisymmetric_body.cfg): inviscid body-of-revolution run using `meshes-op2/axisymmetric_body.h5`
+- [configs/naca_wing.cfg](configs/naca_wing.cfg): baseline finite-wing run using `meshes-op2/naca_wing.h5`
 
 ## Validation
 
@@ -210,29 +223,8 @@ h5diff -p 1e-6 -v debug_bump_solution.h5 opt_bump_solution.h5
 
 The validation targets in `docs/VALIDATION.md` were updated after these changes.
 
-## HDF5 Mesh Datasets
+## HDF5 Mesh Datasets and Output
 
-The OP2 app expects these datasets:
-
-- `node_coordinates` `[N,3]`
-- `node_volume` `[N,1]`
-- `node_wall_distance` `[N,1]`
-- `edge-->node` `[E,2]`
-- `edge_weights` `[E,3]`
-- `bface-->node` `[F,4]`
-- `bface_normal` `[F,3]`
-- `bface_area` `[F,1]`
-- `bface_group` `[F,1]`
-- `bface_type` `[F,1]`
-
-Connectivity is written zero-based.
-
-## Output
-
-The OP2 app writes HDF5 solution datasets:
-
-- `q`
-- `primitive`
-- `dt`
-
-These are written into the configured solution HDF5 file and can be visualized through the converter step.
+The mesh datasets the OP2 app reads (zero-based connectivity) are listed in
+`docs/OP2_SOLVER.md`, section 14; its outputs (solution, residual and force
+histories, snapshots) and the post-processing tools in section 15.

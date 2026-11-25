@@ -76,6 +76,25 @@ Current expected status:
 
 The script should pass when the OP2 implementation remains within the validated residual band and produces usable benchmark outputs.
 
+### 4. Implicit scheme
+
+```bash
+BUILD_DIR=build bash tests/test_implicit.sh
+```
+
+This runs 12 implicit iterations on the bump with the CMake build (`README.md`,
+"Implicit Time Stepping") for PETSc and hypre, each OP2 variant (seq, genseq,
+OpenMP, CUDA and their MPI builds) and the linear-solve options of
+`OP2_SOLVER.md` section 17 (`pc`, `pmat`, `op`, `jacobian_interval`,
+`partition`, `reorder`): 35 runs. Each must reduce `L2(rho)` below a tenth of
+its first iteration's, and the runs of one algorithm must agree to 1%.
+
+### 5. Verification against references
+
+The TMR flat plate, the cylinder at Re 100, the circular arc and the OAT15A
+buffet are run by their scripts against reference solutions and experiments:
+`OP2_SOLVER.md` section 19.
+
 ## Manual workflow
 
 ### Build helpers
