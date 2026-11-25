@@ -233,15 +233,6 @@ free stream's density, speed of sound and pressure. For flows with shocks, where
 reconstruction fails and the edge limiter's switches stall the implicit scheme's inner iterations
 (dual time stepping), it converges them as the unlimited scheme does smooth flows.
 
-`limiter = 3` applies van Albada's only near shocks: each node's pressure sensor
-\(\psi_i = |\sum_j(p_j-p_i)|/\sum_j(p_j+p_i)\) over its edges gives the weight
-\(\min(1,\max(0,\psi/\psi_0-1))\), \(\psi_0\) = `limiter_sensor` (5e-4), the edge's the larger of its
-nodes'; the increment blends van Albada's with \((u+e)/2\), its value for small differences. Van
-Albada's alone also acts in boundary layers, shear layers and wakes, wherever the differences
-exceed \(\varepsilon\): there it flattens extrema (the reverse flow under a separation) and adds
-dissipation. On the OAT15A grid \(\psi\) is about 1e-5 in boundary layers, at most 3e-4 at the leading
-edge and 1e-3 to 0.15 through the shock.
-
 This limiter is directional and edge-local. It is less multidimensional than a Venkatakrishnan-style nodal extrema limiter, but it maps cleanly onto OP2 loops.
 
 Implementation:
@@ -462,15 +453,15 @@ smoothly, as the NASA Turbulence Modeling Resource's SA does (\(\bar S \ge -c_2\
 \(\Omega + \Omega(c_2^2\Omega + c_3\bar S)/((c_3-2c_2)\Omega-\bar S)\), \(c_2=0.7\), \(c_3=0.9\)): a hard clip of it
 switches in the buffer layer. The diffusion is in section 8.
 
-Two of the Turbulence Modeling Resource's variants, which lower the eddy viscosity of separated
-shear layers (transonic buffet: standard SA damps the shock's oscillation on OAT15A):
-
-- `sa_comp = 1`, SA-comp: the destruction gains \(C_5\tilde\nu^2/a^2\,\partial_j u_i\partial_j u_i\),
-  \(C_5 = 3.5\), \(a\) the local speed of sound. On the TMR flat plate (M 0.2) it moves \(C_f\) by 0.02%.
-- `sa_edwards = 1`, SA-noft2-Edwards: \(\tilde S = S^{1/2}(1/\chi + f_{v1})\) from the strain
-  \(S = (\partial_j u_i + \partial_i u_j)\partial_j u_i - \tfrac23(\partial_k u_k)^2\), and
-  \(r = \tanh(\tilde\nu/(\tilde S\kappa^2 d^2))/\tanh 1\). Its flat-plate \(C_f(0.97)\) converges with
-  the grid about 2% below the standard model's (0.002649 on 137x97).
+`sa_comp = 1` selects SA-comp, the Turbulence Modeling Resource's compressibility correction: the
+destruction gains \(C_5\tilde\nu^2/a^2\,\partial_j u_i\partial_j u_i\), \(C_5 = 3.5\), \(a\) the local
+speed of sound. It lowers the eddy viscosity of separated shear layers; on the TMR flat plate
+(M 0.2) it moves \(C_f\) by 0.02%. On OAT15A (M 0.73, Re 3e6, the full grid) standard SA damps the
+shock's oscillation at every angle tried (3.9 to 5.5 degrees); with SA-comp buffet sets in at about
+3.2 degrees (the experiment's onset lies between 3.1 and 3.25): \(\Delta C_L\) 0.105 at 3.25,
+0.220 at 3.5, 0.317 at 3.9, Strouhal number 0.070-0.071 (experiment 0.066), the same with time steps
+of 0.24 and 0.06 c/U. The shock's pressure fluctuation peaks about 15% above the experiment's and
+0.04-0.05 c further aft (Cp RMS 0.36 at x/c 0.50 against 0.31 at 0.45 at 3.5 degrees).
 
 In the implicit scheme's Jacobian the source's derivative by \(\tilde\nu\) is a difference of the
 source terms themselves: the destruction's through \(r\) and \(f_w\) as well (near walls about
