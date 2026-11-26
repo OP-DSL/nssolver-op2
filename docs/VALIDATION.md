@@ -118,9 +118,9 @@ the second only checks that the formula-driven 3D meshes (`bump3d`, `axisymmetri
 | 7 | Cylinder, Re 100 | laminar unsteady NS, dual time | St 0.163, $\bar C_D$ 1.36, $C_L'$ 0.32 | 15 min on a V100 |
 | 8 | 18% circular arc | transonic shock oscillation, SA URANS | St 0.157 (experiment 0.156) | 2.7 h on a V100 |
 | 9 | OAT15A | transonic buffet onset, amplitude, frequency, wall pressure | onset 3.2° (experiment 3.1-3.25°), St 0.070 (0.066) | 4 h per run on a V100 |
-| 10 | ONERA M6 | inviscid 3D wing on an SU2 mesh | regression values; does not run as shipped | 31 s on a CPU core |
+| 10 | ONERA M6 | Euler on an SU2 tetrahedral mesh, 3D transonic wing | $C_L$ 0.288; upper $C_p$ RMS 0.07-0.12 against the experiment, lower 0.03-0.05 | 2 min on a laptop GPU |
 
-Cases 6-9 each have a script that preprocesses the mesh, runs the solver and prints the
+Cases 6-10 each have a script that preprocesses the mesh, runs the solver and prints the
 case's figures of merit; `BIN` names the executable (`build/nssolver_op2_seq` by
 default) and `LAUNCH` an optional launcher such as `mpirun -np 4`. On the `cl`
 cluster the `scripts/cl/*.sbatch` jobs run the same scripts on one GPU
@@ -161,14 +161,14 @@ x = 0.97 and the drag (`scripts/tmr/flatplate_forces.py`) against CFL3D's on the
 | 545x385 | 0.0027046 | 0.0027054 | 0.0028478 | 0.0028525 |
 
 From 69x49 on the skin friction matches FUN3D's on the same grid to 0.03%, and
-the drag to 0.2%. The density residual falls six to seven orders in about 100
-iterations (to round-off on 35x25) and then levels off at an L2 norm of
-$10^{-12}$ to $3\cdot10^{-12}$, whatever the CFL number or linear solver: the
-remainder sits on a few pairs of neighbouring nodes with equal and opposite
-mass residuals (on 69x49 at the wall at x = 1.57 and next to the symmetry plane
-at x = -0.26). The figures above no longer move: 250 more iterations on the
-545x385 grid change $C_f$ in the seventh digit. A fully prescribed inflow instead of TMR's raises $C_f$ by 0.45%: the
-boundaries matter at this level.
+the drag to 0.2%. The density residual falls to round-off, an L2 norm of about
+$10^{-16}$, in 100 (35x25) to 220 (137x97) iterations and 450 on 273x193. On
+545x385 the linear solves stop at GMRES's 100 iterations above their tolerance
+and the residual falls a decade per 100 iterations, to $4 \cdot 10^{-14}$ in 500.
+The cl script's 250 iterations leave these two at $10^{-13}$ and
+$3 \cdot 10^{-12}$, with the coefficients converged to the digits shown. A fully
+prescribed inflow instead of TMR's raises $C_f$ by 0.45%: the boundaries matter
+at this level.
 
 ### 7. Cylinder at Re 100
 
@@ -199,7 +199,11 @@ Strouhal number, mean drag and lift amplitude over the last five periods
 | Williamson (1989), Park et al. (1998) | | 0.164-0.166 | 1.33-1.37 | 0.32-0.34 |
 
 On 96x64 the upwind scheme's dissipation at M 0.2 suppresses the shedding. A
-step takes about 7 inner iterations to `inner_tolerance` 1e-3.
+step takes about 7 inner iterations to `inner_tolerance` 1e-3. A few steps in a
+run stop at the 30-iteration cap just short of it, and rarely a step's inner
+iterations diverge: one of five 192x128 runs blew up in a single step, after
+step 928. GPU runs differ from each other at the inner tolerance, so a rerun
+takes another path; `forces.py` reports a diverged history instead of its periods.
 
 ### 8. 18% circular arc
 
@@ -331,19 +335,39 @@ first runs the script's `check`, which on these snapshots gives:
 
 ### 10. ONERA M6
 
-An inviscid 3D wing on SU2's public mesh, 100 explicit iterations at CFL 0.01
-against regression values, not a converged solution against a reference:
-`docs/ONERA_M6_VALIDATION.md` (`scripts/run_onera_m6_validation.sh`,
-`scripts/compare_onera_m6_orders.sh`).
+The ONERA M6 wing in inviscid transonic flow, SU2's tutorial case: M 0.8395,
+3.06 degrees, SU2's 108k-node tetrahedral mesh (`configs/onera_m6.cfg`: second
+order with the van Albada limiter, implicit, CFL 10 growing by 1.3 to 1e4, 150
+iterations). Its upper surface carries the lambda shock: two shocks inboard that
+merge outboard. The experiment is Schmitt and Charpin's (AGARD AR-138, test
+2308, Re 11.7e6), surface pressure at seven span stations.
 
-The case does not run as shipped. Its post-processing helper
-(`src/onera_m6_validation.cpp`, for the forces and surface $C_p$) has not
-compiled since `update_primitives` was removed, and the Makefile's
-`helper-tools` does not build it. The scripts preprocess the mesh only when
-`meshes-op2/onera_m6.h5` is missing, and one written before the current mesh
-contract (`OP2_SOLVER.md` section 14) crashes the solver: delete it first.
-Preprocessed afresh, the first-order run takes 31 s on one core and ends at
-L2/L2_0 0.720, against the 0.664 recorded before the numerics changed.
+```bash
+BIN=build/nssolver_op2_cuda scripts/run_onera_m6_validation.sh --solve-config configs/solve.json
+```
+
+The script downloads SU2's mesh and configuration and the experiment's sections
+(NASA's NPARC archive), preprocesses the mesh, runs it, writes the wall forces
+and $C_p$ (`nssolver_onera_m6_validation_helper`, which also cuts the wall at
+the experiment's stations) and compares the sections with the experiment
+(`scripts/onera_m6_sections.py`, with a plot where matplotlib is installed):
+`docs/ONERA_M6_VALIDATION.md`.
+
+The density residual falls to round-off ($10^{-13}$, ten orders) in 150
+iterations, 2 minutes on a laptop GPU. $C_L$ 0.288 and $C_D$ 0.0130 on the
+wing's planform area (0.759); the $C_p$ RMS difference from the experiment on
+each side of each section:
+
+| y/b | 0.20 | 0.44 | 0.65 | 0.80 | 0.90 | 0.96 | 0.99 |
+|---|---|---|---|---|---|---|---|
+| upper | 0.105 | 0.100 | 0.076 | 0.076 | 0.114 | 0.069 | 0.115 |
+| lower | 0.054 | 0.040 | 0.026 | 0.028 | 0.033 | 0.025 | 0.033 |
+
+The leading-edge suction peaks, the lower surface and the shocks' pattern match;
+the upper-surface differences are the shocks' positions: the computed shocks sit
+a few percent of the chord aft of the experiment's and are sharper: without a
+boundary layer, nothing thickens their foot. At y/b 0.99 the experiment's aft
+upper surface carries more suction than the computation's: the tip vortex's.
 
 ## Manual workflow
 
@@ -397,7 +421,7 @@ The helper scripts currently use pragmatic engineering thresholds:
 
 - `box` final `L2(rho)` must remain near zero
 - OP2 bump final `L2(rho)` target is about `6.97872e-04`
-- flat-plate final `L2(rho)` target is about `4.07403e-08`
+- flat-plate final `L2(rho)` target is about `4.07306e-08`
 
 These thresholds should only be tightened after solver changes are validated over multiple runs.
 

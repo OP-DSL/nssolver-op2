@@ -1,92 +1,45 @@
 # ONERA M6 Validation Case
 
-This case uses the public SU2 ONERA M6 inviscid tutorial mesh and freestream setup:
+The ONERA M6 wing in inviscid transonic flow, on SU2's public tutorial mesh and
+free stream, against Schmitt and Charpin's experiment:
 
 - Tutorial: https://su2code.github.io/tutorials/Inviscid_ONERAM6/
 - Source mesh: `public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2`
 - Source config: `public-data/onera_m6/inv_ONERAM6.cfg`
+- Experiment: V. Schmitt and F. Charpin, "Pressure distributions on the ONERA-M6-wing at
+  transonic Mach numbers", AGARD AR-138 (1979), test 2308; the surface pressure at seven span
+  stations from NASA's NPARC archive, `public-data/onera_m6/ONERAb114.tec`
+  (https://www.grc.nasa.gov/www/wind/valid/m6wing/m6wing.html)
 
-The scripts do not run as shipped, and the values below predate the current numerics:
-`VALIDATION.md` section 10.
+`docs/VALIDATION.md` section 10 summarizes the case among the other verification runs.
 
 ## Download and conversion
 
-Bootstrap the public tutorial assets with:
+`scripts/download_onera_m6_su2_case.sh` fetches SU2's configuration
+(`su2code/Tutorials`), extracts the mesh from that repository's archive and
+downloads the experiment's sections, into `public-data/onera_m6/`. The run
+script calls it, and preprocesses the mesh afresh each time (a second or so):
 
 ```bash
-./scripts/download_onera_m6_su2_case.sh
+.helpers/bin/nssolver_preprocess_op2_helper onera_m6 meshes-op2/onera_m6.h5 public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2
 ```
 
-This script downloads:
-
-- `inv_ONERAM6.cfg` from the public `su2code/Tutorials` repository
-- the `su2code/Tutorials` source archive from GitHub
-- `mesh_ONERAM6_inv_ffd.su2` extracted from that archive
-
-The files are stored under:
-
-- `public-data/onera_m6/inv_ONERAM6.cfg`
-- `public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2`
-
-Convert the SU2 mesh to the OP2 HDF5 mesh format with:
-
-```bash
-./scripts/preprocess_mesh.sh onera_m6 meshes-op2/onera_m6.h5 public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2
-```
-
-Both `run_onera_m6_validation.sh` and `compare_onera_m6_orders.sh` call the download script automatically, so a fresh checkout does not need a manual data-prep step.
-
-## What this case validates
-
-This is a regression and setup validation case for the current solver and mesh importer. It validates:
-
-- SU2 tetra mesh import into the OP2 HDF5 mesh format
-- triangular boundary-face support in preprocessing and OP2 kernels
-- correct mapping of the ONERA M6 wall, farfield, and symmetry markers
-- stable inviscid advancement on the imported mesh
-- reproducible wing force and surface `Cp` postprocessing
-
-It is not yet a claim of agreement with SU2's final converged solution or with the Schmitt-Carpin experimental dataset. The current solver path differs materially from the SU2 tutorial:
-
-- explicit local-time stepping instead of SU2 implicit multigrid
-- HLLC edge fluxes instead of SU2 JST-centered dissipation
-- first-order baseline run (`second_order = 0`)
-
-Use this case as a numerical baseline for importer and solver changes. Do not treat the 100-iteration coefficients below as published aerodynamic truth.
-
-## Imported mesh expectations
-
-The imported OP2 mesh generated from the official SU2 file should have:
+The imported mesh has:
 
 - nodes: `108396`
-- tetra elements in source SU2 mesh: `582752`
-- OP2 dual edges: `710525`
-- boundary faces: `38756`
+- tetrahedra in the SU2 mesh: `582752`
+- dual edges: `710525`
+- boundary faces (triangles): `38756`
 
-The SU2 marker order in the source mesh is:
+SU2's markers, in the mesh's order, become boundary groups 1-7: `LOWER_SIDE`,
+`TIP`, `UPPER_SIDE` (walls, groups 1-3), `XNORMAL_FACES`, `ZNORMAL_FACES`,
+`YNORMAL_FACE` (far field), `SYMMETRY_FACE` (the root's symmetry plane). The
+wing's semi-span b is 1.1963 m, where the rounded tip cap starts.
 
-1. `LOWER_SIDE`
-2. `TIP`
-3. `UPPER_SIDE`
-4. `XNORMAL_FACES`
-5. `ZNORMAL_FACES`
-6. `YNORMAL_FACE`
-7. `SYMMETRY_FACE`
+## Free stream
 
-The validation helper uses wall groups `1,2,3`.
-
-## Freestream state
-
-The dimensional freestream is derived from the SU2 tutorial inputs:
-
-- `Mach = 0.8395`
-- `AOA = 3.06 deg`
-- `p_inf = 101325 Pa`
-- `T_inf = 288.15 K`
-- `gamma = 1.4`
-- `R = 287.05 J/(kg K)`
-
-Derived values used in the config and validation helper:
+From the SU2 tutorial's inputs (M 0.8395, 3.06 degrees, 101325 Pa, 288.15 K,
+$\gamma$ 1.4, R 287.05 J/(kg K)):
 
 - `rho_inf = 1.2250122659906946 kg/m^3`
 - `u_inf = 285.26805348028574 m/s`
@@ -96,91 +49,46 @@ Derived values used in the config and validation helper:
 ## Running the case
 
 ```bash
-./scripts/run_onera_m6_validation.sh
+BIN=build/nssolver_op2_cuda scripts/run_onera_m6_validation.sh --solve-config configs/solve.json
 ```
 
-This will:
+`configs/onera_m6.cfg`: inviscid, second order with the van Albada limiter,
+the implicit scheme from CFL 10 growing by 1.3 a step to 1e4, 150 iterations.
+The script then runs `nssolver_onera_m6_validation_helper` on the solution: the
+pressure force on the wall groups, its coefficients on the planform area (the
+walls' upward-facing projected area), the wall's face $C_p$, and the wall cut at
+the experiment's stations y/b = 0.20, 0.44, 0.65, 0.80, 0.90, 0.96 and 0.99,
+which `scripts/onera_m6_sections.py` compares with the experiment.
 
-1. preprocess the public SU2 mesh into `meshes-op2/onera_m6.h5` if needed
-2. run `nssolver_op2_seq` with `configs/onera_m6.cfg`
-3. write a coefficient summary JSON
-4. write a surface `Cp` CSV
-5. export a VTK file for visualization
+Outputs in `outputs-op2/`:
 
-Outputs:
+- `onera_m6_solution.h5`, `onera_m6_solution.residual.csv`
+- `onera_m6_summary.json`: reference area, force and coefficients
+- `onera_m6_surface_cp.csv`: each wall face's centroid and $C_p$
+- `onera_m6_sections.csv`: the stations' cuts (station, group, x, z, $C_p$)
+- `onera_m6_sections.png`: computed against experimental sections, where matplotlib is installed
+- `onera_m6_solution.vtk`
 
-- `outputs-op2/onera_m6_solution.h5`
-- `outputs-op2/onera_m6_solution.residual.csv`
-- `outputs-op2/onera_m6_summary.json`
-- `outputs-op2/onera_m6_surface_cp.csv`
-- `outputs-op2/onera_m6_solution.vtk`
+## Results
 
-## Current baseline
+The density residual falls ten orders, to round-off ($10^{-13}$), in 150
+iterations: 2 minutes on a laptop GPU (RTX 4050), 3300 linear iterations, no
+rejected updates. A first-order run converges in 30 iterations.
 
-With `configs/onera_m6.cfg`:
+- reference area `0.758799`
+- `CL = 0.287754`, `CD = 0.0130338` (pressure only, inviscid)
 
-- iterations: `100`
-- CFL: `0.01`
-- inviscid
-- first-order
+The $C_p$ RMS difference from the experiment, at the experiment's points:
 
-Observed baseline after 100 iterations:
+| y/b | 0.20 | 0.44 | 0.65 | 0.80 | 0.90 | 0.96 | 0.99 |
+|---|---|---|---|---|---|---|---|
+| upper | 0.105 | 0.100 | 0.076 | 0.076 | 0.114 | 0.069 | 0.115 |
+| lower | 0.054 | 0.040 | 0.026 | 0.028 | 0.033 | 0.025 | 0.033 |
 
-- `L2(rho) / L2(rho)_initial = 0.664117`
-- `reference_area = 0.758799`
-- `CD = 0.0144481`
-- `CL = 0.0149413`
-- `CX = 0.01363`
-- `CZ = 0.0156912`
-
-These numbers should be used as a regression check for this exact solver configuration. If they move substantially after a code change, inspect:
-
-- SU2 import topology
-- boundary face node counts
-- wall/farfield/symmetry marker mapping
-- boundary flux assembly on triangular faces
-
-## Second-order comparison
-
-A stable second-order configuration is provided in:
-
-- `configs/onera_m6_second_order.cfg`
-
-This uses:
-
-- `second_order = 1`
-- `iterations = 100`
-- `cfl = 0.005`
-
-Run the side-by-side comparison with:
-
-```bash
-./scripts/compare_onera_m6_orders.sh
-```
-
-This writes:
-
-- `outputs-op2/onera_m6_second_order_solution.h5`
-- `outputs-op2/onera_m6_second_order_summary.json`
-- `outputs-op2/onera_m6_second_order_surface_cp.csv`
-- `outputs-op2/onera_m6_order_comparison.json`
-
-Current comparison at equal iteration count (`100`) shows:
-
-- first-order:
-  - `CD = 0.0144481`
-  - `CL = 0.0149413`
-  - global `Cp min/max = -0.456643 / 0.846524`
-- second-order:
-  - `CD = 0.0108547`
-  - `CL = 0.0118057`
-  - global `Cp min/max = -0.244485 / 0.58331`
-
-Interpretation:
-
-- both runs are stable and generate positive lift and drag
-- both show upper-surface suction, so the imported ONERA geometry and marker mapping are behaving physically
-- the second-order run is presently more conservative than the first-order baseline at the same iteration count
-- relative to the SU2 tutorial, the current solver still under-resolves the stronger transonic pressure signature expected from the ONERA M6 lambda-shock pattern
-
-That last point is expected. The SU2 tutorial uses implicit multigrid and JST-centered numerics, while this solver path is still explicit edge-based HLLC. The comparison script is therefore a numerical trend check, not a code-to-code equivalence claim.
+The lower surface, the leading-edge suction peaks and the lambda pattern (two
+upper-surface shocks at 0.44 and 0.65, merged from 0.80 out) match. The
+upper-surface differences are the shocks' positions: the computed shocks sit a
+few percent of the chord aft of the experiment's and are sharper, as expected
+without a boundary layer to thicken their foot. At y/b 0.99 the experiment's aft upper surface
+carries the tip vortex's suction, which the computation lacks. The experiment's
+stated accuracy is $\pm 0.02$ in $C_p$.

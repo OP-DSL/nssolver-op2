@@ -113,7 +113,8 @@ $$
 \sum_{j\in N(i)} \Delta\mathbf{S}_{ij} + \sum_{f\in \partial \Omega_i} \Delta\mathbf{S}_{f,i} = 0,
 $$
 
-to round-off, so a uniform state has no residual anywhere, boundaries included.
+to round-off, so a uniform state has no residual anywhere, boundaries included (the
+preprocessor checks it, section 14).
 
 The solver uses OP2 edge loops for interior fluxes and OP2 boundary-face loops for boundary fluxes.
 
@@ -135,7 +136,11 @@ $$
 
 The inverse conversion precedes every residual evaluation: each Runge-Kutta stage, each implicit
 iteration. It keeps density and pressure above $10^{-12}$; an update that would take them below
-`rho_floor` or `p_floor` is not kept (sections 11 and 17).
+`rho_floor` or `p_floor` is not kept (sections 11 and 17). Each update zeroes momentum
+components below $10^{-12}$ of the node's largest one and $\rho\tilde\nu$ below $10^{-14}\rho$:
+round-off traces, such as a planar run's $w$, that optimized and debug builds would otherwise
+carry differently. A floor on the velocity itself would also zero the real wall-normal velocity
+of the nodes next to a wall, which grows as $y^2$, and hold the residual above round-off there.
 
 Implementation:
 
@@ -606,7 +611,21 @@ trailing edge a concave corner, where the wall's normals cross), its lines
 normal to the wall within `blend_length` and straight to equal angles on the
 far-field circle beyond.
 
-All connectivity is zero-based in the preprocessed OP2 mesh. Meshes written before `bface_node_normals` existed must be preprocessed again. (The solver no longer reads `bnode_slip` and `bnode_normal`.)
+SU2 meshes (`su2`, `onera_m6`) are tetrahedral: median-dual edges from each
+tetrahedron's six, the markers typed by name (`UPPER_SIDE`, `LOWER_SIDE` and
+`TIP` walls, `SYMMETRY_FACE` a slip plane, the rest far field). The importer
+summed half the tetrahedra's dual faces with the wrong sign before November
+2026, so its earlier meshes' control volumes do not close: preprocess them again.
+
+Every node's control volume must close: its edges' dual faces (outward) and its
+boundary sub-faces sum to zero. The preprocessor rejects a mesh whose largest
+imbalance exceeds `1e-8` of the node's total face area (the builders above
+close to round-off, about `1e-14`), as it does non-positive volumes and
+zero-area faces.
+
+All connectivity is zero-based in the preprocessed OP2 mesh. The solver stops on a mesh
+that lacks a dataset it reads (one written before `bface_node_normals` existed): preprocess
+it again. (The solver no longer reads `bnode_slip` and `bnode_normal`.)
 
 The local preprocessing helper also supports procedural structured meshes with
 runtime parameter overrides; `bump3d` and `axisymmetric_body` default to
@@ -821,3 +840,7 @@ post-processing and results:
   0.070-0.071 (experiment 0.066), the same with time steps of 0.24 and 0.06 c/U; the shock's
   pressure fluctuation peaks about 15% above the experiment's and 0.04-0.05 c further aft.
   Standard SA damps the shock's oscillation at every incidence tried (3.9 to 5.5 degrees).
+- The ONERA M6 wing (Euler, M 0.8395, 3.06 degrees, SU2's tutorial mesh): converged to round-off
+  in 150 implicit iterations, $C_L$ 0.288 and the lambda shock against Schmitt and Charpin's
+  sections (upper-surface $C_p$ within 0.07-0.12 RMS, the shocks a little aft of the
+  experiment's, as inviscid flow puts them).
