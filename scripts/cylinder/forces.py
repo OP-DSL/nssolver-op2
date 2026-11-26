@@ -15,6 +15,10 @@ def main():
     periods = int(sys.argv[6]) if len(sys.argv) > 6 else 5
     q = 0.5 * rho * u * u * d * span
     rows = [(float(r["time"]), float(r["fx"]) / q, float(r["fy"]) / q) for r in csv.DictReader(open(path))]
+    # A diverged run's force stops crossing zero, which would leave a window before it.
+    bad = next((r for r in rows if not abs(r[1]) + abs(r[2]) < 100.0), None)
+    if bad:
+        sys.exit(f"{path}: diverged by t = {bad[0]:.4g} (Cd {bad[1]:.3g}, Cl {bad[2]:.3g})")
     t = [r[0] for r in rows]
     cd = [r[1] for r in rows]
     cl = [r[2] for r in rows]
