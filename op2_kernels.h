@@ -57,12 +57,14 @@ inline void primitive_to_conservative_op2(const double *p, double *q) {
 // Momentum components below 1e-12 of the node's momentum are round-off traces (a
 // planar run's w), zeroed so that builds agree. The floor is relative: a wall's
 // first nodes carry real normal velocities below any fixed one (v grows as y^2),
-// and snapping those stalls convergence.
+// and snapping those stalls convergence. The largest component sets it, and the
+// test is strict: an overflowing or infinite momentum stays, for the update's
+// pressure check to reject.
 inline void cleanup_conservative_op2(double *q) {
   const double rho = fmax(fabs(q[0]), 1.0e-12);
-  const double momentum_floor = 1.0e-12 * sqrt(q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  const double momentum_floor = 1.0e-12 * fmax(fabs(q[1]), fmax(fabs(q[2]), fabs(q[3])));
   for (int m = 1; m <= 3; ++m) {
-    if (fabs(q[m]) <= momentum_floor) q[m] = 0.0;
+    if (fabs(q[m]) < momentum_floor) q[m] = 0.0;
   }
   if (fabs(q[5]) <= 1.0e-14 * rho) q[5] = 0.0;
 }

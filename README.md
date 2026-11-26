@@ -210,7 +210,7 @@ The OP2 kernels now use a guarded HLLC flux path:
 
 The RK and implicit updates also normalize tiny conserved quantities:
 
-- momentum components below `1.0e-12` of the node's momentum magnitude are set to zero
+- momentum components below `1.0e-12` of the node's largest component are set to zero
 - transported turbulence variable values below `1.0e-14 * rho` are set to zero
 
 This cleanup removes roundoff-scale transverse momentum and turbulence traces
