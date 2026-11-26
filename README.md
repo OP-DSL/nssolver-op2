@@ -208,15 +208,18 @@ The OP2 kernels now use a guarded HLLC flux path:
   states without the jump an HLL switch put into the residual
 - invalid HLL denominators fall back to Rusanov flux
 
-The RK update also normalizes tiny conserved quantities after each stage:
+The RK and implicit updates also normalize tiny conserved quantities:
 
-- momentum components below `1.0e-7 * rho` are set to zero
+- momentum components below `1.0e-12` of the node's momentum magnitude are set to zero
 - transported turbulence variable values below `1.0e-14 * rho` are set to zero
 
 This cleanup removes roundoff-scale transverse momentum and turbulence traces
 that can otherwise be amplified differently by optimized and debug builds. The
-current regression expectation is that the optimized and debug `genseq` bump
-solutions compare cleanly with:
+momentum floor is relative to the node's own momentum: an absolute one
+(`1.0e-7 * rho` before) also zeroed the real wall-normal velocity of nodes next
+to a wall or symmetry plane, which held the TMR flat plate's residual at
+`1e-12` instead of round-off. The current regression expectation is that the
+optimized and debug `genseq` bump solutions compare cleanly with:
 
 ```bash
 h5diff -p 1e-6 -v debug_bump_solution.h5 opt_bump_solution.h5
