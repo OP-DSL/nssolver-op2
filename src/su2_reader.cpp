@@ -143,11 +143,13 @@ Mesh build_su2_tet_mesh(const std::vector<Vec3>& points, const std::vector<TetCe
             const Vec3 face2 = face_centroid(coords[ia], coords[ib], coords[id]);
             std::array<Vec3, 4> dual_poly = {midpoint, face1, centroid, face2};
             Vec3 contribution = quad_area_vector(dual_poly);
-            const Vec3 edge_vec = coords[ib] - coords[ia];
+            // Oriented from the key's first node to its second, as the edge's L and R.
+            const auto key = edge_key(tet.nodes[ia], tet.nodes[ib]);
+            const Vec3 edge_vec = points[static_cast<std::size_t>(key.second)] - points[static_cast<std::size_t>(key.first)];
             if (dot(contribution, edge_vec) < 0.0) {
                 contribution = -1.0 * contribution;
             }
-            edge_area[edge_key(tet.nodes[ia], tet.nodes[ib])] = edge_area[edge_key(tet.nodes[ia], tet.nodes[ib])] + contribution;
+            edge_area[key] = edge_area[key] + contribution;
         }
 
         const std::array<std::tuple<int, int, int, int>, 4> faces = {{
