@@ -114,9 +114,9 @@ the second only checks that the formula-driven 3D meshes (`bump3d`, `axisymmetri
 
 | Section | Case | Checks | Result | Cost |
 |---|---|---|---|---|
-| 6 | TMR flat plate | steady SA, viscous wall, TMR boundaries | $C_f$ = FUN3D's to 0.03% on each grid from 69x49 | three coarsest 1.5 min on a laptop GPU, two finest 9 min on an A100 |
+| 6 | TMR flat plate | steady SA, viscous wall, TMR boundaries | $C_f$ = FUN3D's to 0.07% on each grid from 69x49 | three coarsest 1.5 min on a laptop GPU, two finest 9 min on an A100 |
 | 7 | Cylinder, Re 100 | laminar unsteady NS, dual time | St 0.163, $\bar C_D$ 1.36, $C_L'$ 0.32 | 15 min on a V100 |
-| 8 | 18% circular arc | transonic shock oscillation, SA URANS | St 0.157 (experiment 0.156) | 2.7 h on a V100 |
+| 8 | 18% circular arc | transonic shock oscillation, SA URANS | St 0.159 (experiment 0.156) | 2.7 h on a V100 |
 | 9 | OAT15A | transonic buffet onset, amplitude, frequency, wall pressure | onset 3.2° (experiment 3.1-3.25°), St 0.070 (0.066) | 4 h per run on a V100 |
 | 10 | ONERA M6 | Euler on an SU2 tetrahedral mesh, 3D transonic wing | $C_L$ 0.288; upper $C_p$ RMS 0.07-0.12 against the experiment, lower 0.03-0.05 | 2 min on a laptop GPU |
 
@@ -154,14 +154,14 @@ x = 0.97 and the drag (`scripts/tmr/flatplate_forces.py`) against CFL3D's on the
 
 | Grid | $C_f(0.97)$ | FUN3D | $C_D$ | FUN3D |
 |---|---|---|---|---|
-| 35x25 | 0.0026779 | 0.0026674 | 0.0027987 | 0.0027739 |
-| 69x49 | 0.0026957 | 0.0026950 | 0.0028254 | 0.0028226 |
-| 137x97 | 0.0027016 | 0.0027022 | 0.0028366 | 0.0028400 |
-| 273x193 | 0.0027037 | 0.0027045 | 0.0028431 | 0.0028479 |
-| 545x385 | 0.0027046 | 0.0027054 | 0.0028478 | 0.0028525 |
+| 35x25 | 0.0026785 | 0.0026674 | 0.0028003 | 0.0027739 |
+| 69x49 | 0.0026968 | 0.0026950 | 0.0028252 | 0.0028226 |
+| 137x97 | 0.0027020 | 0.0027022 | 0.0028367 | 0.0028400 |
+| 273x193 | 0.0027039 | 0.0027045 | 0.0028435 | 0.0028479 |
+| 545x385 | 0.0027047 | 0.0027054 | 0.0028482 | 0.0028525 |
 
-From 69x49 on the skin friction matches FUN3D's on the same grid to 0.03%, and
-the drag to 0.2%. The density residual falls to round-off, an L2 norm of about
+The skin friction matches FUN3D's on the same grid to 0.07% on 69x49 and to
+0.03% from 137x97 on, the drag to 0.2%. The density residual falls to round-off, an L2 norm of about
 $10^{-16}$, in 100 (35x25) to 220 (137x97) iterations and 450 on 273x193. On
 545x385 the linear solves stop at GMRES's 100 iterations above their tolerance
 and the residual falls a decade per 100 iterations, to $4 \cdot 10^{-14}$ in 500.
@@ -199,11 +199,11 @@ Strouhal number, mean drag and lift amplitude over the last five periods
 | Williamson (1989), Park et al. (1998) | | 0.164-0.166 | 1.33-1.37 | 0.32-0.34 |
 
 On 96x64 the upwind scheme's dissipation at M 0.2 suppresses the shedding. A
-step takes about 7 inner iterations to `inner_tolerance` 1e-3. A few steps in a
-run stop at the 30-iteration cap just short of it, and rarely a step's inner
-iterations diverge: one of five 192x128 runs blew up in a single step, after
-step 928. GPU runs differ from each other at the inner tolerance, so a rerun
-takes another path; `forces.py` reports a diverged history instead of its periods.
+step takes about 7 inner iterations to `inner_tolerance` 1e-3, none more than
+20. Before the boundary gradients were made exact for linear fields
+(`OP2_SOLVER.md` section 5), a spurious spanwise velocity at the outflow kicked
+the inner iterations: some steps stopped at the 30-iteration cap, and one run in
+five blew up. `forces.py` reports a diverged history instead of its periods.
 
 ### 8. 18% circular arc
 
@@ -228,12 +228,14 @@ of 1.9e-4 s are 15.8 periods of 127 steps; the oscillation sets in by itself.
 
 | | St | $C_L$ | $C_D$ |
 |---|---|---|---|
-| Reference run (A100) | 0.1577 | $\pm 0.3276$ | 0.0670 |
-| Rerun at the current numerics (V100) | 0.1574 | $\pm 0.3283$ | $0.0667 \pm 0.0089$ |
+| Current numerics (RTX 4050 laptop GPU) | 0.1588 | $\pm 0.3281$ | $0.0670 \pm 0.0085$ |
+| Before exact boundary gradients (V100) | 0.1574 | $\pm 0.3283$ | $0.0667 \pm 0.0089$ |
 | McDevitt et al., reduced frequency 0.49 | 0.156 | | |
 
-The rerun agrees with the reference run to 0.2%; 143 of its 2000 steps reach the
-30 inner iterations before `inner_tolerance` 1e-3.
+A step takes 12.5 inner iterations to `inner_tolerance` 1e-3 on average, none
+more than 18. Before the boundary gradients were made exact for linear fields
+(`OP2_SOLVER.md` section 5), 143 of the 2000 steps stopped at the 30-iteration
+cap, and the frequency was 0.9% lower.
 
 ### 9. OAT15A transonic buffet
 
@@ -353,15 +355,15 @@ the experiment's stations) and compares the sections with the experiment
 (`scripts/onera_m6_sections.py`, with a plot where matplotlib is installed):
 `docs/ONERA_M6_VALIDATION.md`.
 
-The density residual falls to round-off ($10^{-13}$, ten orders) in 150
-iterations, 2 minutes on a laptop GPU. $C_L$ 0.288 and $C_D$ 0.0130 on the
+The density residual falls to round-off ($3 \cdot 10^{-14}$, eleven orders) in 150
+iterations, 2 minutes on a laptop GPU. $C_L$ 0.288 and $C_D$ 0.0132 on the
 wing's planform area (0.759); the $C_p$ RMS difference from the experiment on
 each side of each section:
 
 | y/b | 0.20 | 0.44 | 0.65 | 0.80 | 0.90 | 0.96 | 0.99 |
 |---|---|---|---|---|---|---|---|
-| upper | 0.105 | 0.100 | 0.076 | 0.076 | 0.114 | 0.069 | 0.115 |
-| lower | 0.054 | 0.040 | 0.026 | 0.028 | 0.033 | 0.025 | 0.033 |
+| upper | 0.104 | 0.102 | 0.076 | 0.076 | 0.115 | 0.070 | 0.114 |
+| lower | 0.055 | 0.041 | 0.026 | 0.028 | 0.033 | 0.025 | 0.034 |
 
 The leading-edge suction peaks, the lower surface and the shocks' pattern match;
 the upper-surface differences are the shocks' positions: the computed shocks sit
@@ -421,7 +423,7 @@ The helper scripts currently use pragmatic engineering thresholds:
 
 - `box` final `L2(rho)` must remain near zero
 - OP2 bump final `L2(rho)` target is about `6.97872e-04`
-- flat-plate final `L2(rho)` target is about `4.07306e-08`
+- flat-plate final `L2(rho)` target is about `4.07298e-08`
 
 These thresholds should only be tightened after solver changes are validated over multiple runs.
 

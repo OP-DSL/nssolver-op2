@@ -834,12 +834,12 @@ Implementation:
 post-processing and results:
 
 - The NASA TMR zero-pressure-gradient flat plate (SA, M 0.2, Re 5e6): the skin friction at
-  x = 0.97 matches FUN3D's on the same grid to 0.03% from the 69x49 grid to the 545x385 one
-  (0.0026957 against 0.0026950 on 69x49).
+  x = 0.97 matches FUN3D's on the same grid to 0.07% on the 69x49 grid (0.0026968 against
+  0.0026950) and to 0.03% from 137x97 to 545x385.
 - Laminar vortex shedding behind a cylinder at Re 100, by dual time stepping: Strouhal number
   0.163, mean drag 1.36 and lift amplitude 0.32 on the 192x128 grid at 50 steps a period.
 - The 18% circular arc (SA, M 0.76, Re 11e6): self-excited shock oscillation at Strouhal number
-  0.157 (the experiment's reduced frequency 0.49 is 0.156), lift $\pm 0.33$.
+  0.159 (the experiment's reduced frequency 0.49 is 0.156), lift $\pm 0.33$.
 - The ONERA OAT15A buffet (SA-comp, M 0.73, Re 3e6): onset at about 3.2 degrees (experiment
   3.1-3.25), $\Delta C_L$ 0.105, 0.220 and 0.317 at 3.25, 3.5 and 3.9 degrees, Strouhal number
   0.070-0.071 (experiment 0.066), the same with time steps of 0.24 and 0.06 c/U; the shock's

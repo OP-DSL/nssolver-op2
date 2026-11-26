@@ -71,19 +71,19 @@ Outputs in `outputs-op2/`:
 
 ## Results
 
-The density residual falls ten orders, to round-off ($10^{-13}$), in 150
-iterations: 2 minutes on a laptop GPU (RTX 4050), 3300 linear iterations, no
+The density residual falls eleven orders, to round-off ($3 \cdot 10^{-14}$), in 150
+iterations: 2 minutes on a laptop GPU (RTX 4050), 3100 linear iterations, no
 rejected updates. A first-order run converges in 30 iterations.
 
 - reference area `0.758799`
-- `CL = 0.287754`, `CD = 0.0130338` (pressure only, inviscid)
+- `CL = 0.287997`, `CD = 0.0131679` (pressure only, inviscid)
 
 The $C_p$ RMS difference from the experiment, at the experiment's points:
 
 | y/b | 0.20 | 0.44 | 0.65 | 0.80 | 0.90 | 0.96 | 0.99 |
 |---|---|---|---|---|---|---|---|
-| upper | 0.105 | 0.100 | 0.076 | 0.076 | 0.114 | 0.069 | 0.115 |
-| lower | 0.054 | 0.040 | 0.026 | 0.028 | 0.033 | 0.025 | 0.033 |
+| upper | 0.104 | 0.102 | 0.076 | 0.076 | 0.115 | 0.070 | 0.114 |
+| lower | 0.055 | 0.041 | 0.026 | 0.028 | 0.033 | 0.025 | 0.034 |
 
 The lower surface, the leading-edge suction peaks and the lambda pattern (two
 upper-surface shocks at 0.44 and 0.65, merged from 0.80 out) match. The
