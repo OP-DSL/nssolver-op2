@@ -546,20 +546,22 @@ inline void edge_grad_kernel(const double *prim_l, const double *prim_r, const d
   }
 }
 
-// Weight of face node k in the average over node j's median sub-face of the
-// face's (bi)linear interpolant: exact for linear fields on flat faces.
+// Weight of face node k in node j's sub-face value: the node's own on quads,
+// (6, 1, 1) / 8 on triangles. With the edges' midpoint values these make the
+// gradient exact for linear fields on tetrahedra and extruded meshes; the face's
+// interpolant averaged over the sub-face does not, and gives a planar run's
+// nodes a gradient normal to its planes.
 inline double subface_weight_op2(int nodes, int j, int k) {
-  if (k == j) return nodes == 4 ? 9.0 / 16.0 : 22.0 / 36.0;
-  if (nodes == 4 && (k - j + 4) % 4 == 2) return 1.0 / 16.0;
-  return nodes == 4 ? 3.0 / 16.0 : 7.0 / 36.0;
+  if (nodes == 4) return k == j ? 1.0 : 0.0;
+  return k == j ? 6.0 / 8.0 : 1.0 / 8.0;
 }
 
 inline void bface_grad_kernel(const int *num_nodes, const double *shares, const double *prim1, const double *prim2,
                               const double *prim3, const double *prim4, double *grad1, double *grad2, double *grad3,
                               double *grad4) {
-  // Each node's median sub-face of the face contributes the face's
-  // interpolant averaged over it, times the sub-face's area vector, which
-  // closes the node's Green-Gauss surface.
+  // Each node's median sub-face of the face contributes its value
+  // (subface_weight_op2) times the sub-face's area vector, which closes the
+  // node's Green-Gauss surface.
   const int nodes = num_nodes[0] == 4 ? 4 : 3;
   double p[4][NPRIM_OP2];
   for (int m = 0; m < NPRIM_OP2; ++m) {

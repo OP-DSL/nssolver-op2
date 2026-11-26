@@ -164,7 +164,12 @@ $$
 \right],
 $$
 
-where $\mathbf{W}_{f,i}$ is the face's (bi)linear interpolant averaged over node $i$'s sub-face: $(9\mathbf{W}_i + 3\mathbf{W}_{next} + 3\mathbf{W}_{prev} + \mathbf{W}_{opp})/16$ on quads, $(22\mathbf{W}_i + 7\mathbf{W}_{next} + 7\mathbf{W}_{prev})/36$ on triangles, which is exact for linear fields on flat faces.
+where $\mathbf{W}_{f,i}$ is node $i$'s own value on quads and $(6\mathbf{W}_i + \mathbf{W}_{next} +
+\mathbf{W}_{prev})/8$ on triangles. These match the edges' midpoint values: the gradient is then exact
+for linear fields on tetrahedral and extruded meshes. The face's interpolant averaged over the
+sub-face, exact for the sub-face alone, is not: it gives every node of a one-cell-thick planar mesh a
+gradient normal to its planes (up to $10^4$ times the true one on the TMR plate's stretched cells),
+which the reconstruction turns into a spanwise force.
 
 In the OP2 implementation:
 
