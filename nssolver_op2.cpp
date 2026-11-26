@@ -541,9 +541,13 @@ int main(int argc, char **argv) {
     m.bface_type = op_decl_dat_hdf5(m.bfaces, 1, "int", mesh_file, "bface_type");
     m.bface_shares = op_decl_dat_hdf5(m.bfaces, 12, "double", mesh_file, "bface_node_normals");
     op_dat bface_group = op_decl_dat_hdf5(m.bfaces, 1, "int", mesh_file, "bface_group");
-    (void)bface_group;
     m.bnode_dirichlet = op_decl_dat_hdf5(m.bnodes, 1, "int", mesh_file, "bnode_dirichlet");
     m.bnode_wall = op_decl_dat_hdf5(m.bnodes, 1, "int", mesh_file, "bnode_wall");
+    // OP2 names a dataset the file lacks and returns a null dat: an older preprocessor's mesh.
+    for (op_dat dat : {m.node_coords, m.node_volume, m.node_wall_distance, m.edge_weights,
+                       m.bface_normal, m.bface_area, m.bface_num_nodes, m.bface_type,
+                       m.bface_shares, bface_group, m.bnode_dirichlet, m.bnode_wall})
+      if (!dat) throw std::runtime_error(cfg.mesh_file + " lacks datasets: preprocess it again");
 
     if (cfg.partition == "random")
       op_partition("RANDOM", NULL, m.nodes, NULL, NULL);
