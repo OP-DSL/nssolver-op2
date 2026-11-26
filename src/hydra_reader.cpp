@@ -30,7 +30,30 @@ MeshValidationReport validate_mesh(const Mesh& mesh) {
             ++report.zero_area_boundary_faces;
         }
     }
-    report.ok = report.zero_or_negative_volumes == 0 && report.zero_area_edges == 0 && report.zero_area_boundary_faces == 0;
+    // An open control volume does not preserve a uniform flow.
+    std::vector<Vec3> imbalance(mesh.nodes.count);
+    std::vector<Real> face_area(mesh.nodes.count, 0.0);
+    for (std::size_t e = 0; e < mesh.edges.count; ++e) {
+        const Vec3 n {mesh.edges.nx[e], mesh.edges.ny[e], mesh.edges.nz[e]};
+        imbalance[mesh.edges.node_L[e]] = imbalance[mesh.edges.node_L[e]] + n;
+        imbalance[mesh.edges.node_R[e]] = imbalance[mesh.edges.node_R[e]] - n;
+        face_area[mesh.edges.node_L[e]] += norm(n);
+        face_area[mesh.edges.node_R[e]] += norm(n);
+    }
+    const std::vector<Real> shares = boundary_node_normals(mesh);
+    for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
+        const auto nodes = boundary_face_nodes(mesh.boundary_faces, f);
+        for (std::size_t k = 0; k < boundary_face_num_nodes(mesh.boundary_faces, f); ++k) {
+            const Vec3 s {shares[12 * f + 3 * k], shares[12 * f + 3 * k + 1], shares[12 * f + 3 * k + 2]};
+            imbalance[nodes[k]] = imbalance[nodes[k]] + s;
+            face_area[nodes[k]] += norm(s);
+        }
+    }
+    for (std::size_t i = 0; i < mesh.nodes.count; ++i) {
+        report.max_closure_error = std::max(report.max_closure_error, norm(imbalance[i]) / std::max(face_area[i], 1.0e-300));
+    }
+    report.ok = report.zero_or_negative_volumes == 0 && report.zero_area_edges == 0 &&
+                report.zero_area_boundary_faces == 0 && report.max_closure_error <= 1.0e-8;
     return report;
 }
 

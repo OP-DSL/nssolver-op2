@@ -383,7 +383,11 @@ int main(int argc, char** argv) {
     const Mesh mesh = build_mesh(case_name, input_path, params);
     const MeshValidationReport report = validate_mesh(mesh);
     if (!report.ok) {
-        throw std::runtime_error("preprocessed mesh failed validation");
+        throw std::runtime_error("preprocessed mesh failed validation: " +
+                                 std::to_string(report.zero_or_negative_volumes) + " non-positive volumes, " +
+                                 std::to_string(report.zero_area_edges) + " zero-area edges, " +
+                                 std::to_string(report.zero_area_boundary_faces) + " zero-area faces, closure " +
+                                 std::to_string(report.max_closure_error));
     }
     write_op2_mesh_hdf5(mesh, output_path);
     std::cout << "Wrote OP2 mesh: " << output_path << "\n";
