@@ -6,12 +6,16 @@ OUT_DIR="$APP_DIR/public-data/onera_m6"
 CFG_PATH="$OUT_DIR/inv_ONERAM6.cfg"
 MESH_PATH="$OUT_DIR/mesh_ONERAM6_inv_ffd.su2"
 ZIP_PATH="$OUT_DIR/Tutorials-master.zip"
+EXP_PATH="$OUT_DIR/ONERAb114.tec"
 TMP_EXTRACT="$OUT_DIR/.tmp_extract"
 
 CFG_URL="https://raw.githubusercontent.com/su2code/Tutorials/master/compressible_flow/Inviscid_ONERAM6/inv_ONERAM6.cfg"
 ZIP_URL="https://codeload.github.com/su2code/Tutorials/zip/refs/heads/master"
+# Schmitt and Charpin's section Cp (AGARD AR-138, test 2308) from NASA's NPARC archive.
+EXP_URL="https://www.grc.nasa.gov/www/wind/valid/m6wing/ONERAb114.tec"
 
 mkdir -p "$OUT_DIR"
+[ -f "$EXP_PATH" ] || curl -L --fail "$EXP_URL" -o "$EXP_PATH"
 
 if [ -f "$CFG_PATH" ] && [ -f "$MESH_PATH" ]; then
   echo "ONERA M6 tutorial assets already present in $OUT_DIR"

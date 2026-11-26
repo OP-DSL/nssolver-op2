@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
+# ONERA M6, SU2's inviscid tutorial mesh: docs/ONERA_M6_VALIDATION.md.
+#
+#   BIN=build/nssolver_op2_seq scripts/run_onera_m6_validation.sh [--option value ...]
+#
+# Extra arguments go to the run.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$APP_DIR"
+BIN=${BIN:-build/nssolver_op2_seq}
+LAUNCH=${LAUNCH:-}
 
-SU2_MESH="$APP_DIR/public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2"
-OP2_MESH="$APP_DIR/meshes-op2/onera_m6.h5"
-CFG="$APP_DIR/configs/onera_m6.cfg"
-SOLUTION="$APP_DIR/outputs-op2/onera_m6_solution.h5"
-SUMMARY="$APP_DIR/outputs-op2/onera_m6_summary.json"
-SURFACE_CP="$APP_DIR/outputs-op2/onera_m6_surface_cp.csv"
-VTK="$APP_DIR/outputs-op2/onera_m6_solution.vtk"
+SU2_MESH="public-data/onera_m6/mesh_ONERAM6_inv_ffd.su2"
+OP2_MESH="meshes-op2/onera_m6.h5"
+CFG="configs/onera_m6.cfg"
+SOLUTION="outputs-op2/onera_m6_solution.h5"
+SUMMARY="outputs-op2/onera_m6_summary.json"
+SURFACE_CP="outputs-op2/onera_m6_surface_cp.csv"
+VTK="outputs-op2/onera_m6_solution.vtk"
+SECTIONS="outputs-op2/onera_m6_sections.csv"
+EXPERIMENT="public-data/onera_m6/ONERAb114.tec"
 
 RHO_INF="1.2250122659906946"
 U_INF="285.26805348028574"
@@ -18,17 +28,14 @@ W_INF="15.249834230540356"
 P_INF="101325.0"
 WALL_GROUPS="1,2,3"
 
-"$APP_DIR/scripts/download_onera_m6_su2_case.sh"
+scripts/download_onera_m6_su2_case.sh
+mkdir -p meshes-op2 outputs-op2
+# Always afresh (a second or so): a mesh from an older importer may lack datasets or be wrong.
+.helpers/bin/nssolver_preprocess_op2_helper onera_m6 "$OP2_MESH" "$SU2_MESH"
 
-if [ ! -f "$OP2_MESH" ]; then
-  "$APP_DIR/scripts/preprocess_mesh.sh" onera_m6 "$OP2_MESH" "$SU2_MESH"
-fi
+$LAUNCH "$BIN" --config "$CFG" "$@"
 
-make -C "$APP_DIR" seq
-"$APP_DIR/nssolver_op2_seq" --config "$CFG"
-
-"$APP_DIR/scripts/build_helpers.sh"
-"$APP_DIR/.helpers/bin/nssolver_onera_m6_validation_helper" \
+.helpers/bin/nssolver_onera_m6_validation_helper \
   "$OP2_MESH" \
   "$SOLUTION" \
   "$SUMMARY" \
@@ -38,10 +45,13 @@ make -C "$APP_DIR" seq
   "$V_INF" \
   "$W_INF" \
   "$P_INF" \
-  "$WALL_GROUPS"
+  "$WALL_GROUPS" \
+  "$SECTIONS"
+python3 scripts/onera_m6_sections.py "$SECTIONS" "$EXPERIMENT" outputs-op2/onera_m6_sections.png
 
-"$APP_DIR/scripts/hdf5_to_vtk.sh" "$OP2_MESH" "$SOLUTION" "$VTK"
+.helpers/bin/nssolver_hdf5_to_vtk_helper "$OP2_MESH" "$SOLUTION" "$VTK"
 
 echo "validation summary: $SUMMARY"
 echo "surface Cp CSV: $SURFACE_CP"
+echo "sections: $SECTIONS"
 echo "VTK output: $VTK"

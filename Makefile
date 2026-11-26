@@ -44,7 +44,7 @@ helpers-config:
 
 helpers-build: helper-tools
 
-helper-tools: $(HELPER_BINDIR)/nssolver_preprocess_op2_helper $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper
+helper-tools: $(HELPER_BINDIR)/nssolver_preprocess_op2_helper $(HELPER_BINDIR)/nssolver_hdf5_to_vtk_helper $(HELPER_BINDIR)/nssolver_op2_benchmark_postprocess_helper $(HELPER_BINDIR)/nssolver_onera_m6_validation_helper
 
 preprocess-box: helpers-build
 	./scripts/preprocess_mesh.sh box meshes-op2/box.h5

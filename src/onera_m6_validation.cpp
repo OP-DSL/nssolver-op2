@@ -108,24 +108,23 @@ Mesh read_op2_mesh_hdf5(const std::string& path) {
     return mesh;
 }
 
-FlowState read_solution_hdf5(const std::string& path, const GasModel& gas, std::size_t node_count) {
+FlowState read_solution_hdf5(const std::string& path, std::size_t node_count) {
     const hdf5::Handle file = hdf5::open_file_readonly(path);
-    const auto q = hdf5::read_dataset<Real>(file, "q").second;
-    if (q.size() != 6 * node_count) {
-        throw std::runtime_error("solution dataset 'q' has unexpected shape");
+    const auto primitive = hdf5::read_dataset<Real>(file, "primitive").second;
+    if (primitive.size() != 6 * node_count) {
+        throw std::runtime_error("solution dataset 'primitive' has unexpected shape");
     }
 
     FlowState state;
     state.resize(node_count);
     for (std::size_t i = 0; i < node_count; ++i) {
-        state.rho[i] = q[6 * i + 0];
-        state.rhou[i] = q[6 * i + 1];
-        state.rhov[i] = q[6 * i + 2];
-        state.rhow[i] = q[6 * i + 3];
-        state.rhoE[i] = q[6 * i + 4];
-        state.rhoNu[i] = q[6 * i + 5];
+        state.rho[i] = primitive[6 * i + 0];
+        state.u[i] = primitive[6 * i + 1];
+        state.v[i] = primitive[6 * i + 2];
+        state.w[i] = primitive[6 * i + 3];
+        state.p[i] = primitive[6 * i + 4];
+        state.nu_tilde[i] = primitive[6 * i + 5];
     }
-    update_primitives(state, gas);
     return state;
 }
 #endif
@@ -268,6 +267,52 @@ void write_surface_cp_csv(const std::string& path,
     }
 }
 
+// The wall cut at the experiment's span stations (Schmitt and Charpin, y/b
+// with b the wing's semi-span, 1.1963 m, where SU2's tip cap starts): per face
+// that crosses a station, its cut segment's midpoint, Cp interpolated from the
+// nodes' pressure.
+void write_sections_csv(const std::string& path,
+                        const Mesh& mesh,
+                        const FlowState& state,
+                        const Primitive& freestream,
+                        const std::vector<Index>& wall_groups) {
+    const std::array<Real, 7> stations {0.2, 0.44, 0.65, 0.8, 0.9, 0.96, 0.99};
+    const Real span = 1.1963;
+    const Vec3 velocity {freestream.u, freestream.v, freestream.w};
+    const Real qinf = 0.5 * freestream.rho * dot(velocity, velocity);
+
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("failed to open sections output: " + path);
+    }
+    out << "station,group_id,x,z,cp\n";
+    for (const Real station : stations) {
+        const Real y0 = station * span;
+        for (std::size_t f = 0; f < mesh.boundary_faces.count; ++f) {
+            if (!contains_group(wall_groups, mesh.boundary_faces.group_id[f])) continue;
+            const auto nodes = boundary_face_nodes(mesh.boundary_faces, f);
+            const std::size_t count = boundary_face_num_nodes(mesh.boundary_faces, f);
+            Real x = 0.0, z = 0.0, p = 0.0;
+            int crossings = 0;
+            for (std::size_t k = 0; k < count; ++k) {
+                const Index a = nodes[k];
+                const Index b = nodes[(k + 1) % count];
+                const Real ya = mesh.nodes.y[a];
+                const Real yb = mesh.nodes.y[b];
+                if ((ya < y0) == (yb < y0)) continue;
+                const Real t = (y0 - ya) / (yb - ya);
+                x += mesh.nodes.x[a] + t * (mesh.nodes.x[b] - mesh.nodes.x[a]);
+                z += mesh.nodes.z[a] + t * (mesh.nodes.z[b] - mesh.nodes.z[a]);
+                p += state.p[a] + t * (state.p[b] - state.p[a]);
+                ++crossings;
+            }
+            if (crossings == 0) continue;
+            out << station << ',' << mesh.boundary_faces.group_id[f] << ',' << x / crossings << ','
+                << z / crossings << ',' << (p / crossings - freestream.p) / qinf << '\n';
+        }
+    }
+}
+
 void write_summary_json(const std::string& path, const CoefficientSummary& summary) {
     std::filesystem::path out_path(path);
     if (out_path.has_parent_path()) {
@@ -308,15 +353,14 @@ int main(int argc, char** argv) {
     (void)argv;
     throw std::runtime_error("nssolver_onera_m6_validation requires HDF5-enabled build");
 #else
-    if (argc != 11) {
+    if (argc != 11 && argc != 12) {
         std::cerr << "usage: nssolver_onera_m6_validation <mesh.h5> <solution.h5> <summary.json> <surface_cp.csv> "
-                     "<rho_inf> <u_inf> <v_inf> <w_inf> <p_inf> <wall_group_ids>\n";
+                     "<rho_inf> <u_inf> <v_inf> <w_inf> <p_inf> <wall_group_ids> [sections.csv]\n";
         return 1;
     }
 
     const Mesh mesh = read_op2_mesh_hdf5(argv[1]);
-    GasModel gas {};
-    const FlowState state = read_solution_hdf5(argv[2], gas, mesh.nodes.count);
+    const FlowState state = read_solution_hdf5(argv[2], mesh.nodes.count);
     const Primitive freestream {
         .rho = std::stod(argv[5]),
         .u = std::stod(argv[6]),
@@ -329,6 +373,7 @@ int main(int argc, char** argv) {
     const CoefficientSummary summary = compute_coefficients(mesh, state, freestream, wall_groups);
     write_summary_json(argv[3], summary);
     write_surface_cp_csv(argv[4], mesh, state, freestream, wall_groups);
+    if (argc == 12) write_sections_csv(argv[11], mesh, state, freestream, wall_groups);
     std::cout << "reference_area=" << summary.reference_area
               << " cd=" << summary.cd
               << " cl=" << summary.cl
