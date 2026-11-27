@@ -347,8 +347,7 @@ $-\tfrac{2}{3}(\mu+\mu_t)\nabla\cdot\mathbf{u}$ of the flow along the plane, whi
 through it. All of $\mathbf{n}\cdot\boldsymbol{\tau}\cdot\mathbf{n}$ would cancel the viscous damping of
 that velocity, which then grows on a one-cell extrusion. The plane's normal velocity is imposed
 weakly, by the ghost state (section 9.1), and stays small but not zero: on the OAT15A's one-cell
-extrusion the planes' nodes carry up to 0.6% of the free stream's speed through them, equal and
-opposite on the two planes, with no mass crossing either.
+extrusion the planes' nodes carry up to $1.2\cdot10^{-4}$ of the free stream's speed through them.
 
 SA's diffusion, $\frac{1}{\sigma}[\nabla\cdot((\mu+\rho\tilde\nu)\nabla\tilde\nu) + c_{b2}\rho|\nabla\tilde\nu|^2]$,
 is taken as node-based codes take it,

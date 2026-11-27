@@ -192,15 +192,14 @@ Strouhal number, mean drag and lift amplitude over the last five periods
 
 | Grid | Steps a period | St | $\bar C_D$ | $C_L'$ |
 |---|---|---|---|---|
-| 96x64 | 50 | no shedding ($C_D$ 1.148) | | |
+| 96x64 (`FIRST` 0.005) | 50 | 0.1547 | 1.335 | 0.311 |
 | 192x128 | 50 | 0.1626 | 1.358 | 0.324 |
 | 192x128 | 100 | 0.1633 | 1.359 | 0.326 |
 | 384x256 (`FIRST` 0.00125) | 50 | 0.1638 | 1.362 | 0.326 |
 | Williamson (1989), Park et al. (1998) | | 0.164-0.166 | 1.33-1.37 | 0.32-0.34 |
 
-On 96x64 the upwind scheme's dissipation at M 0.2 suppresses the shedding. A
-step takes about 7 inner iterations to `inner_tolerance` 1e-3, none more than
-20. Before the boundary gradients were made exact for linear fields
+On 192x128 a step takes about 7 inner iterations to `inner_tolerance` 1e-3, none
+more than 20. Before the boundary gradients were made exact for linear fields
 (`OP2_SOLVER.md` section 5), a spurious spanwise velocity at the outflow kicked
 the inner iterations: some steps stopped at the 30-iteration cap, and one run in
 five blew up. `forces.py` reports a diverged history instead of its periods.
@@ -311,6 +310,11 @@ pressure; the shock's pressure fluctuation peaks about 15% above the
 experiment's and 0.04-0.05 c further aft, and the mean pressure rise lies 0.03-0.05 c aft of
 the experiment's.
 
+These runs predate exact boundary gradients (`OP2_SOLVER.md` section 5). With them, 300
+more steps at 1e-3 from the 3.5-degree cycle give the same cycle, $\Delta C_L$ 0.219 against 0.216
+the 300 steps before, St 0.0704 and $\bar C_L$ 0.937 against 0.939, with 15% fewer linear
+iterations; 152 rather than 239 of the steps end at the 20 inner iterations.
+
 **Video.** `scripts/airfoil/video.py` renders a dual-time run's snapshots as a
 video of the lower symmetry plane (its boundary quads are the section's cells),
 interpolated linearly onto the frame's pixels: the Mach number with the sonic
@@ -323,17 +327,20 @@ CASE=oat15a TAG=TAG ALPHA=3.5 sbatch scripts/cl/video.sbatch        # FIELD=schl
 A smooth video needs about 100 snapshots a period (`--snapshot-interval 2` at
 2.5e-4): 480 steps from the 3.5-degree statistics run took 2 h 15 min on a V100
 and wrote 240 snapshots of 77 MB, which render in 2 minutes on 16 CPU cores. The job
-first runs the script's `check`, which on these snapshots gives:
+first runs the script's `check`, which on 15 snapshots of a 60-step run gives:
 
 - an exact linear field interpolates to $10^{-15}$;
 - the far field, beyond 63 chords, holds M 0.730 and $C_p$ within $\pm 0.004$;
-- the two symmetry planes' pressures agree to $2.3\cdot10^{-4}$ of the free stream's at 99.9% of
-  the nodes; the shock, a little apart on the two, differs by up to 0.8% in pressure and 1.6% in
-  density at a few dozen nodes, and the planes' nodes carry up to 0.6% of the free stream's speed
-  through them (`OP2_SOLVER.md` section 8): one plane is the section;
-- the history's lift less the snapshots' pressure lift varies by $6\cdot10^{-5}$ at their own steps
-  (its mean, $10^{-4}$, is the viscous lift), against $2\cdot10^{-3}$ a step off: each frame
+- the two symmetry planes agree to $2.5\cdot10^{-4}$ of the free stream's pressure, $2.4\cdot10^{-3}$
+  of its speed and $3.7\cdot10^{-3}$ of its density, and their nodes carry up to $1.2\cdot10^{-4}$ of
+  its speed through them (`OP2_SOLVER.md` section 8): one plane is the section;
+- the history's lift less the snapshots' pressure lift varies by $2\cdot10^{-5}$ at their own steps
+  (its mean, $1.5\cdot10^{-4}$, is the viscous lift), against $10^{-3}$ a step off: each frame
   shows its step.
+
+Before the boundary gradients were made exact for linear fields (`OP2_SOLVER.md` section 5),
+the planes carried up to 0.6% of the speed through them and the shock's pressure differed by
+0.8% between them.
 
 ### 10. ONERA M6
 
